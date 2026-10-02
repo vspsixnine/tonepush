@@ -78,8 +78,10 @@ library:
   (TonePush's tones, everyone's or the ones you published). Drag its top edge
   to give it more or less of the window, or double-click the edge to fold it to
   its tabs. Ctrl+L (Cmd+L on macOS) folds it and opens it again, Ctrl+1, Ctrl+2
-  and Ctrl+3 open its tabs, and Ctrl+F searches the open one. With nothing
-  chosen, its details are the loaded preset's tone. TonePush remembers its
+  and Ctrl+3 open its tabs, and Ctrl+F searches the open one. A click on a
+  tone plays it on the pedal in the loaded preset's place, until you keep it
+  or put it back (see [The Workflow](/the-workflow/)). With nothing chosen,
+  its details are the loaded preset's tone. TonePush remembers its
   height, and whether it is folded, for each size of window. When it leaves
   the editor little room, the block's knobs go onto one row that scrolls
   sideways, and then the editor keeps the block's name alone.

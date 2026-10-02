@@ -103,3 +103,38 @@ against sheet 01), `hx-library` (the three sizes in both themes), `hx-cloud`,
   columns menu.
 - The Cloud table keeps its existing columns until stage 6 restyles TonePush's
   tones (By and Downloads in place of Character and Rating).
+
+## Stage 3: a click plays a library tone
+
+A click on a tone in the library plays it on the pedal, in the loaded
+preset's edit buffer; Ctrl-click and Shift-click only choose. The first one
+sets the loaded preset aside with its unsaved changes and its undo history,
+and every one after it plays against that baseline. The audition bar on the
+pane's top edge says what plays and what waits, with the arrow keys that step
+(the worker plays only the row stopped on), **Put Plexi Crunch back** (Esc)
+and **Keep in 01B** (Enter), whose menu adds **In another slot…** (Ctrl
+Enter). The deck names the tone ("Auditioning, from your library · Plexi
+Crunch is set aside") with Save off, Ctrl S pointing at the bar instead; the
+board has its amber rule and "Auditioning Dream Pop"; the row is tinted with
+a speaker for its pedal mark, as is the loaded preset's row in the sidebar;
+the details say "Playing in 01B, in place of Plexi Crunch" and where else the
+tone is. Space plays the chosen tone or puts back the one playing; switching
+the library's tabs leaves it playing; another preset puts it back first, then
+asks; the loaded preset's own row puts it back. A tone the pedal cannot play
+says why in the bar's place, in the info voice, with "Show only what the HX
+Stomp plays". The StompStation PRO auditions the same way, and TonePush's
+tones, which already played on a click, now use the same bar.
+
+Scenes: `hx-audition` (sheet 02, at the three sizes in both themes),
+`hx-audition-keep` (sheet 03), `hx-cannot-play` (sheet 05) and
+`pro-audition`, at 1280 × 760, with the earlier scenes drawn again.
+
+- The large window's "In your library" card is gone, as the design says: the
+  details beside the table are that card now. A loaded preset the library does
+  not hold yet offers "Keep in library" there.
+- The design writes "Plexi Crunch waits, with its 3 unsaved changes"; the
+  editor does not count changes anywhere else, so the bar says "with its
+  unsaved changes".
+- An edit made during an audition still ends it, as before; stage 4 keeps it
+  in the audition. The menu's note says another slot is written once chosen;
+  stage 5 adds the question before it is.

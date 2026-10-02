@@ -10,6 +10,7 @@ use hx_catalog::{Catalog, Kind};
 
 /// Public so the desktop entry point can bring an older library across before
 /// the first window opens. Nothing else here needs to be.
+mod audition;
 mod backups;
 mod board;
 mod browser;
@@ -497,6 +498,12 @@ pub struct App {
     lib_follows: bool,
     /// Scroll the table to the chosen row on its next frame.
     lib_reveal: bool,
+    /// Bring the chosen row into view no further than it needs, as a step
+    /// with the arrow keys does.
+    lib_reveal_near: bool,
+    /// The audition as the editor holds it: the tone asked to play, what it
+    /// set aside, why a click did not play, and which list the arrows step.
+    hearing: audition::Hearing,
     /// The library's rows as the table last drew them, sorted and filtered:
     /// what the arrow keys step through.
     lib_order: Vec<usize>,
@@ -861,6 +868,7 @@ impl LibColumn {
                                 "On the pedal under this name, but different. Send this one"
                             }
                             theme::Sync::Working => "Sending to the pedal…",
+                            theme::Sync::Live => "Playing on the pedal",
                             theme::Sync::Unknown if can_send => "Send it to the pedal",
                             theme::Sync::Unknown => "Not available for the connected pedal",
                         }
@@ -887,6 +895,7 @@ impl LibColumn {
                                 "A different Tone artifact is published. Publish this one"
                             }
                             theme::Sync::Working => "Publishing…",
+                            theme::Sync::Live => "",
                             theme::Sync::Unknown => "",
                         }
                         .to_owned(),
@@ -1378,6 +1387,8 @@ impl App {
             lib_selected: None,
             lib_follows: false,
             lib_reveal: false,
+            lib_reveal_near: false,
+            hearing: audition::Hearing::default(),
             lib_order: Vec::new(),
             lib_draft: library::Meta::default(),
             lib_tag_filter: None,
@@ -1519,6 +1530,8 @@ impl App {
                     }
                     self.auditioning = None;
                     self.put_aside_dirty = false;
+                    self.forget_heard();
+                    self.hearing.strip = None;
                     self.browser = None;
                     self.trial_kept.set(false);
                     self.snapshot_details.clear();
@@ -1665,12 +1678,8 @@ impl App {
                     // dots can be brought in step with it now.
                     self.refresh_mirror();
                 }
-                Ok(Evt::Auditioning(key)) => {
-                    self.auditioning = key;
-                    if key.is_none() {
-                        self.put_aside_dirty = false;
-                    }
-                }
+                Ok(Evt::Auditioning(key)) => self.audition_event(key),
+                Ok(Evt::AuditionFailed(key)) => self.audition_failed(key),
                 Ok(Evt::AuditionPutAside { dirty }) => self.put_aside_dirty = dirty,
                 Ok(Evt::Busy(on)) => {
                     self.busy_since = if on {
@@ -1929,7 +1938,10 @@ impl eframe::App for App {
             self.go_to(shell::Page::Pedal);
         }
         for key in self.pro.take_audition_events() {
-            self.auditioning = key;
+            self.audition_event(key);
+        }
+        for key in self.pro.take_audition_failures() {
+            self.audition_failed(key);
         }
         // Device events wake the UI directly. This slow fallback is for the
         // other background receivers (resource extraction and cloud work), so
@@ -1960,6 +1972,9 @@ impl App {
         let tier = theme::Tier::now(&ctx);
 
         let pro_active = self.pro_active();
+        // An audition's keys come first: its Enter, Esc and arrows are not
+        // the pedal's.
+        self.audition_keys(&ctx, tier);
         if pro_active {
             // The shared library/cloud code keys discovery and publishing off
             // these public device facts. They describe the active adapter; no
@@ -1967,6 +1982,7 @@ impl App {
             // them.
             self.device = self.pro.device_name().to_owned();
             self.firmware = self.pro.firmware().to_owned();
+            self.pro.hearing = self.shown_hearing();
             self.pro.shortcuts(&ctx);
         } else {
             self.shortcuts(&ctx);
@@ -2253,7 +2269,7 @@ impl App {
         } else if pressed(&UNDO) && live && self.undo_depth > 0 {
             self.send(Cmd::Undo);
         }
-        if pressed(&SAVE) && self.dirty {
+        if pressed(&SAVE) && self.dirty && !self.hearing() {
             self.send(Cmd::SavePreset);
         }
 
@@ -2416,6 +2432,7 @@ impl App {
     /// loaded goes through it too: loading it again reloads it from the
     /// pedal, which throws the changes away all the same.
     fn request_preset(&mut self, index: i64) {
+        self.hearing.arrows = audition::Arrows::Presets;
         self.on_preset(index, AfterSwitch::Load);
     }
 
@@ -2426,6 +2443,16 @@ impl App {
     /// nothing is lost - a copy reads the edit buffer as it is, a paste or a
     /// load is one more edit that undo can take back - so those go at once.
     fn on_preset(&mut self, index: i64, then: AfterSwitch) {
+        if self.hearing() {
+            // The loaded preset's own row puts it back; another puts it back
+            // first, then asks about its changes, as any switch does.
+            let back = index == self.preset_index && matches!(then, AfterSwitch::Load);
+            self.end_audition();
+            self.forget_heard();
+            if back {
+                return;
+            }
+        }
         if index == self.preset_index && !matches!(then, AfterSwitch::Load) {
             for cmd in self.commands_for(index, then) {
                 self.send(cmd);
@@ -3145,6 +3172,9 @@ impl App {
         let Some(bytes) = library::read(&sending.hash) else {
             return self.note(format!("{} is missing from the library", sending.name));
         };
+        // What was set aside comes back, changes and all, before another
+        // slot is written: that write never touches the loaded buffer.
+        self.put_back();
         self.note(format!(
             "writing {} to {}",
             sending.name,
@@ -3525,12 +3555,7 @@ impl App {
     }
 
     fn show_library_view(&mut self, view: LibraryView) {
-        if self.lib_showing == LibraryView::Cloud
-            && view != LibraryView::Cloud
-            && self.auditioning.is_some()
-        {
-            self.end_audition();
-        }
+        // An audition plays on whichever tab shows: the bar stays.
         self.lib_showing = view;
         let scoped_device = self.cloud_device_scope();
         if view == LibraryView::Cloud
@@ -3697,13 +3722,17 @@ impl App {
                 self.apply_cloud_artifact(&job.entry, job.action, bytes);
             }
             Ok(cloud::ToneDelivery::External(url)) => {
+                self.audition_failed(job.entry.tone.summary.id);
                 ctx.open_url(egui::OpenUrl::new_tab(url));
                 self.note(format!(
                     "{} is hosted by its original catalog; opened it there",
                     job.entry.tone.summary.name
                 ));
             }
-            Err(why) => self.problem(why),
+            Err(why) => {
+                self.audition_failed(job.entry.tone.summary.id);
+                self.problem(why);
+            }
         }
     }
 
@@ -3763,13 +3792,18 @@ impl App {
         ctx: &egui::Context,
     ) {
         let id = entry.tone.summary.id;
-        if matches!(action, CloudAction::Audition) && self.auditioning == Some(id) {
-            self.end_audition();
+        if matches!(action, CloudAction::Audition) && self.hears(&audition::Source::TonePush(id)) {
+            // A click on the tone playing leaves it playing.
             return;
         }
         if matches!(action, CloudAction::Audition) {
+            self.hearing.strip = None;
             if let Some(why) = self.cloud_audition_blocker(&entry) {
-                self.note(why.to_owned());
+                self.hearing.strip = Some(audition::Strip {
+                    icon: theme::Icon::Info,
+                    words: vec![(why, false)],
+                    narrow: None,
+                });
                 return;
             }
         }
@@ -3804,6 +3838,14 @@ impl App {
             let _ = tx.send(cloud::download(&tone));
             repaint.request_repaint();
         });
+        if matches!(action, CloudAction::Audition) {
+            // The bar says Loading while the file comes.
+            self.begin_hearing(
+                id,
+                audition::Source::TonePush(id),
+                entry.tone.summary.name.clone(),
+            );
+        }
         self.cloud_download = Some(CloudDownloadJob {
             entry,
             action,
@@ -3882,30 +3924,58 @@ impl App {
                 let name = entry.tone.summary.name.clone();
                 if self.pro_active() {
                     if voidx_proto::Preset::parse(&bytes).is_err() {
+                        self.audition_failed(id);
                         return self
                             .problem("this Cloud tone is not a StompStation PRO preset".into());
                     }
-                    self.pro.audition(id, name, bytes);
-                    return;
-                }
-                if hx_proto::preset::Preset::parse(&bytes).is_some() {
+                    self.pro.audition(id, name.clone(), bytes);
+                } else if hx_proto::preset::Preset::parse(&bytes).is_some() {
                     self.send(Cmd::AuditionDocument {
                         key: id,
-                        name,
+                        name: name.clone(),
                         bytes,
                     });
-                    return;
+                } else {
+                    match self.steps_from_hlx(&name, &bytes) {
+                        Ok((_, blocks)) => self.send(Cmd::AuditionSteps {
+                            key: id,
+                            name: name.clone(),
+                            blocks,
+                        }),
+                        Err(why) => {
+                            self.audition_failed(id);
+                            return self.problem(why);
+                        }
+                    }
                 }
-                match self.steps_from_hlx(&name, &bytes) {
-                    Ok((_, blocks)) => self.send(Cmd::AuditionSteps {
-                        key: id,
-                        name,
-                        blocks,
-                    }),
-                    Err(why) => self.problem(why),
-                }
+                self.begin_hearing(id, audition::Source::TonePush(id), name);
             }
         }
+    }
+
+    /// The TonePush tone a cached file belongs to: the tone itself, or for
+    /// a negative key one of its older versions, as `cloud_version_entry`
+    /// keys them.
+    fn cloud_entry_for(&self, key: i64) -> Option<cloud::DiscoveredTone> {
+        if key >= 0 {
+            return self
+                .cloud_entries
+                .iter()
+                .find(|entry| entry.discovered.tone.summary.id == key)
+                .map(|entry| entry.discovered.clone());
+        }
+        let (id, number) = (key.saturating_neg() / 1_000, key.saturating_neg() % 1_000);
+        let entry = self
+            .cloud_entries
+            .iter()
+            .find(|entry| entry.discovered.tone.summary.id == id)?;
+        let version = entry
+            .discovered
+            .tone
+            .versions
+            .iter()
+            .find(|version| i64::from(version.number) == number)?;
+        Some(Self::cloud_version_entry(&entry.discovered, version))
     }
 
     fn cloud_meta(entry: &cloud::DiscoveredTone) -> library::Meta {
@@ -4101,6 +4171,9 @@ impl App {
                 .cloud_download
                 .as_ref()
                 .filter(|job| job.entry.tone.summary.id == entry.tone.summary.id);
+            let heard = self
+                .hears(&audition::Source::TonePush(entry.tone.summary.id))
+                .then(|| self.heard_loading());
             let pedal_place = if !fit.plays {
                 (
                     theme::Icon::Ban,
@@ -4108,6 +4181,23 @@ impl App {
                     fit.why.clone(),
                     false,
                 )
+            } else if let Some(loading) = heard {
+                if loading {
+                    (
+                        theme::Icon::LoaderCircle,
+                        theme::Sync::Working,
+                        "On its way to the pedal".to_owned(),
+                        false,
+                    )
+                } else {
+                    (
+                        theme::Icon::Volume,
+                        theme::Sync::Live,
+                        "Playing on the pedal. Keep it in the loaded slot, and in your library"
+                            .to_owned(),
+                        true,
+                    )
+                }
             } else {
                 (
                     theme::Icon::Pedal,
@@ -4115,14 +4205,10 @@ impl App {
                         theme::Sync::Unknown
                     } else if downloading.is_some_and(|job| job.action == CloudAction::Audition) {
                         theme::Sync::Working
-                    } else if self.auditioning == Some(entry.tone.summary.id) {
-                        theme::Sync::Same
                     } else {
                         theme::Sync::Absent
                     },
-                    if self.auditioning == Some(entry.tone.summary.id) {
-                        "Auditioning now. Keep it in the pedal's edit buffer".to_owned()
-                    } else if let Some(why) = audition_blocker.clone() {
+                    if let Some(why) = audition_blocker.clone() {
                         why
                     } else {
                         "Audition this Tone on the pedal".to_owned()
@@ -4167,6 +4253,15 @@ impl App {
         grid.selected = self
             .cloud_selected
             .and_then(|selected| source_rows.iter().position(|&row| row == selected));
+        let loading = self.heard_loading();
+        grid.playing = source_rows
+            .iter()
+            .position(|&row| {
+                self.hears(&audition::Source::TonePush(
+                    self.cloud_entries[row].discovered.tone.summary.id,
+                ))
+            })
+            .map(|row| (row, loading));
         let order = grid.sort_rows();
         let rows: Vec<usize> = order.iter().map(|&row| source_rows[row]).collect();
 
@@ -4192,6 +4287,7 @@ impl App {
         if let Some((row, ..)) = did.clicked {
             if let Some(&entry) = rows.get(row) {
                 self.cloud_selected = Some(entry);
+                self.hearing.arrows = audition::Arrows::Presets;
                 self.start_cloud_action(entry, CloudAction::Audition, ui.ctx());
             }
         }
@@ -4203,14 +4299,13 @@ impl App {
                 .get(entry)
                 .and_then(|tone| tone.discovered.tone.file_sha256.clone());
             let local = self.local_cloud_entry(wanted.as_deref());
+            let id = self
+                .cloud_entries
+                .get(entry)
+                .map(|entry| entry.discovered.tone.summary.id);
             match place {
-                0 if self.auditioning
-                    == self
-                        .cloud_entries
-                        .get(entry)
-                        .map(|entry| entry.discovered.tone.summary.id) =>
-                {
-                    self.keep_audition()
+                0 if id.is_some_and(|id| self.hears(&audition::Source::TonePush(id))) => {
+                    self.keep_heard();
                 }
                 0 => self.start_cloud_action(entry, CloudAction::Audition, ui.ctx()),
                 _ if local.is_some() => {
@@ -4519,11 +4614,41 @@ impl App {
             };
             let fit = self.fit(&self.lib_entries[i], tier == theme::Tier::S);
             let can_send = can_send && fit.plays;
+            let heard = self
+                .hears(&audition::Source::Library(hash.clone()))
+                .then(|| self.heard_loading());
             let entry = &self.lib_entries[i];
             grid.rows.push(
                 shown
                     .iter()
-                    .map(|c| c.cell(entry, state, cloud, can_send, &fit))
+                    .map(|c| match (c, heard) {
+                        // Playing: a speaker where the pedal mark was, or a
+                        // spinner while it is on its way.
+                        (LibColumn::Sync, Some(loading)) => {
+                            let mut cell = c.cell(entry, state, cloud, can_send, &fit);
+                            if let table::Cell::Places(places) = &mut cell {
+                                if let Some(pedal) = places.first_mut() {
+                                    *pedal = if loading {
+                                        (
+                                            theme::Icon::LoaderCircle,
+                                            theme::Sync::Working,
+                                            "On its way to the pedal".to_owned(),
+                                            false,
+                                        )
+                                    } else {
+                                        (
+                                            theme::Icon::Volume,
+                                            theme::Sync::Live,
+                                            "Playing on the pedal. Put in a slot…".to_owned(),
+                                            can_send,
+                                        )
+                                    };
+                                }
+                            }
+                            cell
+                        }
+                        _ => c.cell(entry, state, cloud, can_send, &fit),
+                    })
                     .collect(),
             );
             grid.chosen.push(self.lib_chosen.contains(&entry.hash));
@@ -4535,6 +4660,16 @@ impl App {
             .lib_selected
             .or_else(|| self.loaded_tone())
             .and_then(|selected| rows.iter().position(|&row| row == selected));
+        // The tone playing on the pedal, or on its way there.
+        let loading = self.heard_loading();
+        grid.playing = rows
+            .iter()
+            .position(|&row| {
+                self.hears(&audition::Source::Library(
+                    self.lib_entries[row].hash.clone(),
+                ))
+            })
+            .map(|row| (row, loading));
 
         if let Some((hash, column, draft)) = self.lib_editing.clone() {
             let cell = rows
@@ -4550,6 +4685,10 @@ impl App {
         let rows: Vec<usize> = order.iter().map(|&row| rows[row]).collect();
         if std::mem::take(&mut self.lib_reveal) {
             grid.reveal = grid.selected;
+        }
+        if std::mem::take(&mut self.lib_reveal_near) {
+            grid.reveal = grid.selected;
+            grid.reveal_near = true;
         }
         // The rows are self.lib_order from here on: the arrow keys step
         // through them as they are drawn.
@@ -4570,6 +4709,11 @@ impl App {
         }
         if let Some((row, ctrl, shift)) = did.clicked {
             self.pick_lib_row(&rows, rows[row], ctrl, shift);
+            self.hearing.arrows = audition::Arrows::Tones;
+            // A click plays; one that adds to a choice only chooses.
+            if !ctrl && !shift {
+                self.audition_library(rows[row]);
+            }
         }
         if let Some(row) = did.double_clicked {
             let hash = self.lib_entries[rows[row]].hash.clone();
@@ -7975,9 +8119,9 @@ mod tests {
         assert!(cmds.try_recv().is_err(), "nothing goes before the answer");
     }
 
-    /// While a cloud Tone is auditioned, the edit buffer reads clean, but
-    /// the one it put aside may not: going to another preset ends the
-    /// audition and throws those changes away, so it asks about them.
+    /// While a tone is auditioned, the edit buffer reads clean, but the one
+    /// it put aside may not: going to another preset puts that back first,
+    /// then asks about its changes before they are thrown away.
     #[test]
     fn a_switch_during_an_audition_asks_about_the_changes_put_aside() {
         let (mut app, events, cmds) = app();
@@ -7990,8 +8134,15 @@ mod tests {
         assert!(!app.dirty, "the audition reads clean");
 
         app.request_preset(5);
+        assert!(
+            matches!(cmds.try_recv(), Ok(Cmd::EndAudition)),
+            "what was set aside is put back first"
+        );
         assert!(app.confirm_switch.is_some());
-        assert!(cmds.try_recv().is_err(), "nothing goes before the answer");
+        assert!(
+            cmds.try_recv().is_err(),
+            "nothing more goes before the answer"
+        );
         app.answer_switch(SwitchAnswer::Cancel);
 
         // Ended, the changes are back as the edit buffer's own; kept, they
@@ -8016,7 +8167,25 @@ mod tests {
 
         app.request_preset(5);
         assert!(app.confirm_switch.is_none());
+        assert!(matches!(cmds.try_recv(), Ok(Cmd::EndAudition)));
         assert!(matches!(cmds.try_recv(), Ok(Cmd::SelectPreset(5))));
+    }
+
+    /// A click on the loaded preset's own row while a tone is auditioned
+    /// puts it back, and goes nowhere.
+    #[test]
+    fn the_loaded_presets_own_row_puts_an_audition_back() {
+        let (mut app, events, cmds) = app();
+        events.send(loaded(2, Some(0), true)).unwrap();
+        events.send(Evt::AuditionPutAside { dirty: true }).unwrap();
+        events.send(Evt::Auditioning(Some(7))).unwrap();
+        app.drain_events();
+        let _ = cmds.try_iter().count();
+
+        app.request_preset(2);
+        assert!(matches!(cmds.try_recv(), Ok(Cmd::EndAudition)));
+        assert!(cmds.try_recv().is_err(), "nothing is reloaded");
+        assert!(app.confirm_switch.is_none(), "nothing is asked");
     }
 
     /// A menu action that has to go to another preset asks before it throws
@@ -8476,8 +8645,10 @@ mod tests {
         assert!(app.log.iter().any(|l| l.contains("could not read")));
     }
 
+    /// An audition plays on whichever of the library's tabs shows: the bar
+    /// stays, and only Put back or Keep ends it.
     #[test]
-    fn leaving_cloud_ends_a_live_audition() {
+    fn an_audition_plays_on_across_the_librarys_tabs() {
         let (mut app, _events, cmds) = app();
         let _ = cmds.try_iter().collect::<Vec<_>>();
         app.lib_showing = LibraryView::Cloud;
@@ -8485,7 +8656,8 @@ mod tests {
 
         app.show_library_view(LibraryView::Tones);
 
-        assert!(matches!(cmds.try_recv(), Ok(Cmd::EndAudition)));
+        assert!(cmds.try_recv().is_err(), "nothing is put back");
+        assert!(app.hearing());
     }
 
     #[test]

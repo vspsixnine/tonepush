@@ -899,6 +899,11 @@ icons! {
     Users => "users",
     User => "user",
     ArrowLeft => "arrow-left",
+    // Keeping what plays: in another slot, in the library; narrowing the
+    // library to what the pedal plays.
+    ArrowDownToLine => "arrow-down-to-line",
+    CloudDownload => "cloud-download",
+    Filter => "filter",
 }
 
 impl Icon {

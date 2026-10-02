@@ -108,10 +108,18 @@ enum Scene {
     HxPages,
     /// A StompStation PRO on 2.0.10, on its NAM amps, the menu open.
     ProPages,
+    /// Dream Pop auditioned from the library over 01B Plexi Crunch.
+    HxAudition,
+    /// The same, Keep's other choices open.
+    HxAuditionKeep,
+    /// Velvet Drive, a StompStation PRO tone, clicked with an HX Stomp.
+    HxCannotPlay,
+    /// Glass Wall auditioned on the StompStation PRO over 03B Velvet Drive.
+    ProAudition,
 }
 
 impl Scene {
-    const ALL: [Scene; 35] = [
+    const ALL: [Scene; 39] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -147,6 +155,10 @@ impl Scene {
         Scene::HxCloud,
         Scene::HxPages,
         Scene::ProPages,
+        Scene::HxAudition,
+        Scene::HxAuditionKeep,
+        Scene::HxCannotPlay,
+        Scene::ProAudition,
     ];
 
     fn name(self) -> &'static str {
@@ -186,6 +198,10 @@ impl Scene {
             Scene::HxCloud => "hx-cloud",
             Scene::HxPages => "hx-pages",
             Scene::ProPages => "pro-pages",
+            Scene::HxAudition => "hx-audition",
+            Scene::HxAuditionKeep => "hx-audition-keep",
+            Scene::HxCannotPlay => "hx-cannot-play",
+            Scene::ProAudition => "pro-audition",
         }
     }
 
@@ -242,6 +258,29 @@ impl Scene {
                 hx_stomp(app);
                 backups_history(app);
                 app.page = shell::Page::Pedal;
+            }
+            Scene::HxAudition | Scene::HxAuditionKeep => {
+                hx_stomp(app);
+                // Every pedal's tones, as the sheet draws them.
+                app.library_device_filter = None;
+                auditioning(app, "Dream Pop");
+                dream_pop_chain(app);
+            }
+            Scene::HxCannotPlay => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                let index = app
+                    .lib_entries
+                    .iter()
+                    .position(|entry| entry.name == "Velvet Drive")
+                    .expect("the library holds Velvet Drive");
+                app.choose_tone(index);
+                app.audition_library(index);
+                app.lib_reveal = true;
+            }
+            Scene::ProAudition => {
+                pro(app);
+                auditioning(app, "Glass Wall");
             }
             Scene::ProPages => {
                 use crate::pro::demo::DemoChain;
@@ -353,6 +392,140 @@ impl Scene {
             kept_from_pro(app);
         }
     }
+}
+
+/// A library tone auditioned with a click, the pedal answering that it
+/// plays: the loaded preset set aside with its unsaved changes and its
+/// history, as the worker would say.
+fn auditioning(app: &mut App, name: &str) {
+    let index = app
+        .lib_entries
+        .iter()
+        .position(|entry| entry.name == name)
+        .expect("the library holds the tone");
+    app.choose_tone(index);
+    app.lib_reveal = true;
+    app.audition_library(index);
+    let key = app
+        .hearing
+        .heard
+        .as_ref()
+        .map(|heard| heard.key)
+        .expect("the tone was asked to play");
+    app.audition_event(Some(key));
+    app.put_aside_dirty = true;
+    app.dirty = false;
+    app.undo_depth = 0;
+    app.redo_depth = 0;
+    app.preset_name = name.to_owned();
+}
+
+/// Dream Pop on the pedal while it is auditioned, as sheet 02 draws it: a
+/// tremolo, the Deluxe and its cab, a delay and a reverb, three snapshots at
+/// 92 BPM.
+fn dream_pop_chain(app: &mut App) {
+    use hx_proto::preset::{Kind, Layout, Path};
+    let Some(catalog) = app.catalog.as_ref() else {
+        return;
+    };
+    let number = |name: &str, category: &str| {
+        catalog
+            .models()
+            .find(|model| {
+                model.name == name
+                    && catalog
+                        .category_of(&model.id)
+                        .and_then(|id| catalog.category(id))
+                        .is_some_and(|found| found.name == category)
+            })
+            .or_else(|| catalog.models().find(|model| model.name == name))
+            .and_then(|model| crate::number_of(catalog, &model.id))
+            .unwrap_or(0)
+    };
+    let defaults = |model: u32| -> Vec<f32> {
+        catalog
+            .model_number(model)
+            .map(|model| {
+                catalog
+                    .ordered_params(model)
+                    .iter()
+                    .map(|p| p.default)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let block = |position: i64, kind: Kind, model: u32| session::Block {
+        position,
+        routing: matches!(kind, Kind::Input | Kind::Output).then_some(0),
+        kind,
+        model,
+        enabled: true,
+        values: defaults(model),
+        paired: None,
+        paired_values: Vec::new(),
+    };
+    let trem = number("Optical Trem", "Modulation");
+    let amp = number("US Deluxe Nrm", "Amp");
+    let cab = number("1x12 US Deluxe", "Cab");
+    let delay = number("Adriatic Delay", "Delay");
+    let reverb = number("Ganymede", "Reverb");
+    let input = app.chain.iter().find(|b| b.position == 0).cloned();
+    let output = app.chain.iter().find(|b| b.position == 9).cloned();
+    app.chain = vec![
+        input.unwrap_or_else(|| block(0, Kind::Input, 0)),
+        block(1, Kind::Block, trem),
+        block(2, Kind::Block, amp),
+        block(3, Kind::Block, cab),
+        block(4, Kind::Block, delay),
+        block(5, Kind::Block, reverb),
+        output.unwrap_or_else(|| block(9, Kind::Output, 0)),
+    ];
+    app.layout = Layout {
+        paths: vec![Path {
+            input: Some(0),
+            output: Some(9),
+            split: None,
+            join: None,
+            head: vec![1, 2, 3, 4, 5],
+            lanes: Vec::new(),
+            tail: Vec::new(),
+        }],
+    };
+    app.selected = 2;
+    app.assignments.clear();
+    app.tempo = Some(92.0);
+    app.snapshots = vec!["Clean".into(), "Wide".into(), "Lead".into()];
+    app.current_snapshot = 0;
+    app.snapshot_details.clear();
+    let carried = |block: i64, name: &str, colour: i64| hx_usb::Carried {
+        block,
+        name: name.to_owned(),
+        colour: Some(colour),
+        enabled: true,
+    };
+    app.switches = vec![
+        hx_usb::Switch {
+            switch: 1,
+            momentary: false,
+            label: None,
+            colour: None,
+            carries: vec![carried(1, "Optical Trem", 0x2080ff)],
+        },
+        hx_usb::Switch {
+            switch: 2,
+            momentary: false,
+            label: None,
+            colour: None,
+            carries: vec![carried(4, "Adriatic Delay", 0x00cc00)],
+        },
+        hx_usb::Switch {
+            switch: 3,
+            momentary: false,
+            label: None,
+            colour: None,
+            carries: vec![carried(5, "Ganymede", 0x00c0c0)],
+        },
+    ];
 }
 
 /// The tone loaded on the StompStation PRO was kept from it, so it carries
@@ -542,6 +715,9 @@ impl Demo {
         }
         if matches!(self.scene, Scene::HxPages | Scene::ProPages) {
             egui::Popup::open_id(ui.ctx(), shell::device_card_menu());
+        }
+        if self.scene == Scene::HxAuditionKeep {
+            egui::Popup::open_id(ui.ctx(), crate::audition::keep_menu());
         }
         app.draw(&mut root);
     }

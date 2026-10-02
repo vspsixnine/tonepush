@@ -30,6 +30,15 @@ Tones in your library are ordinary files in an ordinary folder. You can back the
 
 Every tone says which pedal it is for, in the **Pedal** column of the library and of the Cloud, beside a setlist's name, and in a tone's details: the family, then the model (**HX Stomp**, **HX Effects**, **HX Helix LT**) or, for a StompStation PRO, the firmware its chain needs (**PRO 2.x** when the preset has a chain layout, **PRO 1.5** when it has none). TonePush records the pedal a tone was kept from, and its firmware, when you keep it; for a tone kept before it did, it reads the tone itself, which tells a Stomp from an Effects or a Helix but not a Stomp from a Stomp XL. A tone the connected pedal cannot play has a dashed marker and a ban mark where the pedal mark would be, with the reason on hover: another family, another model (an HX Stomp XL reads HX Stomp tones, not the other way round), a tone made on a newer firmware release (patch releases count as the same release), or a PRO tone with a chain layout on a PRO still on 1.5. With the library scoped to the connected pedal, those tones are left out; **All pedals** shows them.
 
+### Hear a tone with one click
+
+A click on a tone in your library plays it on the pedal, in the place of the preset that is loaded. Nothing is written to the pedal's memory: the loaded preset is set aside with its unsaved changes and its undo history, and a bar along the top of the library says what plays and what waits. Click another tone, or press ↓ and ↑ to step through the list, and each one plays against that same preset; Space plays the chosen tone, or puts back the one playing. Ctrl-click and Shift-click choose tones without playing them.
+
+- **Put back** (Esc) writes the preset back exactly as it was, changes and all.
+- **Keep in 01B** (Enter, named after the loaded slot) makes what plays that slot's edit: Save then writes it over the preset, and Undo still brings the preset back. Its menu also offers **In another slot…** (Ctrl Enter): choose a slot on the left, and it is written once the preset set aside is back.
+
+While a tone plays, Save is off and Ctrl S points at the bar instead; the deck, the chain and the preset's row in the sidebar say what is auditioned. Switching between the library's tabs leaves it playing. Clicking another preset puts it back first, then asks about its changes as any switch does, and clicking the loaded preset's own row puts it back. A tone the pedal cannot play says why where the bar would be, and offers to show only what the pedal plays. A StompStation PRO auditions the same way, and so does a tone from TonePush.
+
 ### 3. Build a setlist
 
 Get the pedal holding the presets you want, in the order you want them, then click the computer icon at the top of the preset list (**Keep every preset on the pedal, in order, as a setlist**), or **Keep the whole pedal as a setlist** on the library's Setlists tab. That records every slot and what is in it; name it, and it opens on that tab.

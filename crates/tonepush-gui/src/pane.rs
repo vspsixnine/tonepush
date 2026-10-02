@@ -1677,6 +1677,9 @@ impl App {
                 .id_salt("block-lens-row")
                 .max_width(width)
                 .auto_shrink([false, true])
+                // The fade and the chevron say there is more; a bar under
+                // the card would read as a line of its own.
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
                     self.face(
                         ui,
@@ -3519,7 +3522,6 @@ impl App {
                                     });
                                 }
                             });
-                            self.library_card(ui);
                         },
                     );
                 });
@@ -3805,106 +3807,6 @@ impl App {
                     )
                 }),
             _ => None,
-        }
-    }
-
-    /// What the library knows of the loaded preset, on a large window.
-    fn library_card(&mut self, ui: &mut Ui) {
-        let name = self.preset_name.clone();
-        let entry = self
-            .lib_entries
-            .iter()
-            .find(|entry| entry.name.trim().eq_ignore_ascii_case(name.trim()))
-            .map(|entry| {
-                (
-                    entry.name.clone(),
-                    entry.version,
-                    entry.meta.clone(),
-                    entry.downloads,
-                )
-            });
-        let sync = self.slot_sync(self.preset_index);
-        let mut keep = false;
-        theme::card().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing = Vec2::ZERO;
-            let aside = entry
-                .as_ref()
-                .map(|(name, version, ..)| format!("{name} · v{version}"))
-                .unwrap_or_else(|| "not kept yet".to_owned());
-            card_head(ui, Some(Icon::Library), "In your library", &aside, |ui| {
-                let label = match (&entry, sync) {
-                    (Some((_, version, ..)), theme::Sync::Differs) => {
-                        Some(format!("Keep as v{}", version + 1))
-                    }
-                    (None, _) => Some("Keep in library".to_owned()),
-                    _ => None,
-                };
-                if let Some(label) = label {
-                    keep = theme::Button::new(&label)
-                        .small()
-                        .icon(Icon::Computer)
-                        .show(ui)
-                        .on_hover_text("Keep the saved preset in your library")
-                        .clicked();
-                }
-            });
-            egui::Frame::new()
-                .inner_margin(egui::Margin {
-                    left: 16,
-                    right: 16,
-                    top: 14,
-                    bottom: 16,
-                })
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    let Some((_, _, meta, downloads)) = &entry else {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(
-                                    "Keep this preset to give it a song, a part and tags, and \
-                                     to find it again for any pedal.",
-                                )
-                                .font(theme::regular(12.5))
-                                .color(theme::muted()),
-                            )
-                            .wrap(),
-                        );
-                        return;
-                    };
-                    let mut rows: Vec<(&str, String)> = vec![
-                        ("Song", meta.song.clone()),
-                        ("Artist", meta.artist.clone()),
-                        ("Part", meta.part.clone()),
-                        ("Guitar", meta.guitar.clone()),
-                        ("Tags", meta.tags.join(", ")),
-                    ];
-                    if let Some(count) = downloads {
-                        rows.push(("TonePush", format!("Published · {count} downloads")));
-                    }
-                    ui.spacing_mut().item_spacing.y = 9.0;
-                    for (key, value) in rows {
-                        if value.trim().is_empty() {
-                            continue;
-                        }
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
-                            let (place, _) =
-                                ui.allocate_exact_size(Vec2::new(96.0, 18.0), Sense::hover());
-                            let k = shell::galley(ui, key, theme::regular(12.5), theme::muted());
-                            shell::paint_line(ui, k, place.left(), place.center().y);
-                            theme::label_truncated(ui, &value, theme::regular(12.5), theme::text());
-                        });
-                    }
-                });
-        });
-        if keep {
-            let action = if entry.is_some() {
-                crate::RowAction::Update
-            } else {
-                crate::RowAction::Keep
-            };
-            self.row_action(self.preset_index, action);
         }
     }
 }

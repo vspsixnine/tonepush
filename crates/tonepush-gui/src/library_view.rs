@@ -452,6 +452,8 @@ pub(crate) enum Words {
     Bold,
     Hot,
     Faint,
+    /// What plays on the pedal now, in amber.
+    Accent,
 }
 
 /// A where-row's words as one line, each part in its voice.
@@ -463,6 +465,7 @@ fn where_job(parts: &[(&str, Words)], width: f32) -> egui::text::LayoutJob {
             Words::Bold => (theme::semibold(12.5), theme::text()),
             Words::Hot => (theme::regular(12.5), theme::hot()),
             Words::Faint => (theme::regular(12.5), theme::faint()),
+            Words::Accent => (theme::medium(12.5), theme::accent()),
         };
         job.append(
             text,
@@ -956,7 +959,52 @@ impl App {
         };
         // The pedal.
         let sending = self.sending.as_ref().is_some_and(|s| s.hash == entry.hash);
-        if sending {
+        let heard = self.hears(&crate::audition::Source::Library(entry.hash.clone()));
+        let set_aside = self.hearing.set_aside.clone().unwrap_or_default();
+        if heard && !sending {
+            let slot = set_aside.slot.clone();
+            if self.heard_loading() {
+                where_row(
+                    ui,
+                    Icon::LoaderCircle,
+                    theme::accent(),
+                    &[
+                        ("On its way to ", Words::Soft),
+                        (slot.as_str(), Words::Bold),
+                    ],
+                    None,
+                );
+            } else {
+                let playing = format!("Playing in {slot}");
+                let mut words = vec![(playing.as_str(), Words::Accent)];
+                let place = format!(", in place of {}", set_aside.name);
+                if !set_aside.name.is_empty() {
+                    words.push((place.as_str(), Words::Soft));
+                }
+                where_row(ui, Icon::Volume, theme::accent(), &words, None);
+            }
+            // Already on the pedal somewhere else too: a way to it.
+            if let Some(held) = self
+                .slot_holding(&entry.hash)
+                .filter(|held| Some(*held) != loaded_slot)
+            {
+                let label = self.active_slot_label(held);
+                let go = format!("Go to {label}");
+                if where_row(
+                    ui,
+                    Icon::Pedal,
+                    theme::text_soft(),
+                    &[
+                        ("Already in ", Words::Soft),
+                        (&label, Words::Bold),
+                        (" on the pedal", Words::Soft),
+                    ],
+                    Some(&go),
+                ) {
+                    self.request_preset(held);
+                }
+            }
+        } else if sending {
             if where_row(
                 ui,
                 Icon::Download,
@@ -995,6 +1043,27 @@ impl App {
                 &[(&plays, Words::Soft)],
                 &why,
             );
+        } else if loaded && self.hearing.heard.is_some() {
+            // Set aside while another tone plays in its slot.
+            let slot = set_aside.slot.clone();
+            let playing = self
+                .hearing
+                .heard
+                .as_ref()
+                .map(|heard| heard.name.clone())
+                .unwrap_or_default();
+            let mut words = vec![
+                ("Set aside from ", Words::Soft),
+                (slot.as_str(), Words::Bold),
+                (" while ", Words::Soft),
+                (playing.as_str(), Words::Bold),
+                (" plays", Words::Soft),
+            ];
+            if set_aside.dirty {
+                words.push((" · ", Words::Faint));
+                words.push(("changes kept", Words::Hot));
+            }
+            where_row(ui, Icon::Pedal, theme::text_soft(), &words, None);
         } else if loaded {
             let slot = loaded_slot
                 .map(|slot| self.active_slot_label(slot))
@@ -1038,7 +1107,7 @@ impl App {
         // This computer.
         let version = format!("v{}", entry.version);
         let keep_as = format!("Keep as v{}", entry.versions + 1);
-        let offer_keep = loaded && dirty && !self.pro_active();
+        let offer_keep = loaded && dirty && !self.pro_active() && !self.hearing();
         if where_row(
             ui,
             Icon::Computer,
@@ -1102,6 +1171,30 @@ impl App {
     /// details typed in place, its versions, and publishing and export.
     fn tone_inspector(&mut self, ui: &mut Ui) {
         let Some(i) = self.lib_selected.filter(|i| *i < self.lib_entries.len()) else {
+            // The loaded preset, not kept yet: the one thing to do with it.
+            if self.pedal_online() && !self.pro_active() && self.preset_index >= 0 {
+                let slot = self.active_slot_label(self.preset_index);
+                let name = self.preset_name.clone();
+                ui.spacing_mut().item_spacing.y = 4.0;
+                let title =
+                    shell::title_galley(ui, &name, 15.0, theme::text(), ui.available_width());
+                let (place, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
+                shell::paint_line(ui, title, place.left(), place.center().y);
+                ui.add_space(8.0);
+                rule(ui);
+                let words = format!("Loaded in {slot}, not in your library yet");
+                if where_row(
+                    ui,
+                    Icon::Computer,
+                    theme::muted(),
+                    &[(&words, Words::Soft)],
+                    Some("Keep in library"),
+                ) {
+                    self.row_action(self.preset_index, crate::RowAction::Keep);
+                }
+                return;
+            }
             ui.add_space(24.0);
             ui.add(
                 egui::Label::new(

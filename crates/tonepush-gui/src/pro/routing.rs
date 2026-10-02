@@ -1007,6 +1007,10 @@ impl Panel {
             dot(&mut x);
             paint(note, false, &mut x);
         }
+        if let Some(shown) = &self.hearing {
+            shell::paint_hearing_note(ui, x, y, &shown.board_note());
+            shell::paint_hearing_rule(ui, rect);
+        }
     }
 
     /// What the header says after the counts: what the board is doing, or

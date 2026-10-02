@@ -231,6 +231,10 @@ impl Panel {
             shell::paint_line(ui, galley, x, header_y);
             x += width;
         }
+        if let Some(shown) = &self.hearing {
+            shell::paint_hearing_note(ui, x, header_y, &shown.board_note());
+            shell::paint_hearing_rule(ui, rect);
+        }
 
         let measured = lay_out(tiles.len(), 0.0, 0.0, rect.width(), g);
         let content_width = measured.width.max(rect.width());

@@ -111,7 +111,8 @@ The library under the editor is the same one used with an HX pedal:
 
 - **Tones** stores byte-exact `.vxpreset` bytes in TonePush's content-addressed
   local library, with names, tags, ratings, Song details, immutable versions,
-  and a chain summary.
+  and a chain summary. A click plays a tone in the loaded preset's place until
+  you keep it or put it back.
 - **Setlists** captures all 60 PRO slots in order. A setlist can be restored as
   a whole, or one tone can be sent back to one chosen slot.
 - **Cloud** searches compatible StompStation PRO tones, downloads them into the

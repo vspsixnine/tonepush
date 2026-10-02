@@ -227,6 +227,8 @@ enum Evt {
     ForgetPresetHashes,
     SetlistRead(Vec<(String, Option<Vec<u8>>)>),
     Auditioning(Option<i64>),
+    /// The tone asked to play under this key could not be played.
+    AuditionFailed(i64),
     Guarded {
         path: PathBuf,
         preset_hashes: BTreeMap<usize, String>,
@@ -314,6 +316,10 @@ pub(crate) struct Panel {
     /// The sidebar asked to keep the whole pedal as a setlist.
     capture_asked: bool,
     audition_events: Vec<Option<i64>>,
+    audition_failures: Vec<i64>,
+    /// What the editor auditions in the loaded preset's place, for the
+    /// deck, the board and the sidebar to say; set by the app each frame.
+    pub(crate) hearing: Option<crate::audition::Shown>,
     preview: Option<(String, Snapshot)>,
     confirmation: Option<Confirmation>,
     /// A whole-device operation and its completion fraction. Kept separate
@@ -404,6 +410,8 @@ impl Panel {
             captured_setlists: Vec::new(),
             capture_asked: false,
             audition_events: Vec::new(),
+            audition_failures: Vec::new(),
+            hearing: None,
             preview: None,
             confirmation: None,
             working: None,
@@ -545,6 +553,7 @@ impl Panel {
                     self.captured_setlists.push(slots);
                 }
                 Ok(Evt::Auditioning(key)) => self.audition_events.push(key),
+                Ok(Evt::AuditionFailed(key)) => self.audition_failures.push(key),
                 Ok(Evt::Guarded {
                     path,
                     preset_hashes,
@@ -730,6 +739,14 @@ impl Panel {
         self.snapshot.as_ref().and_then(active_preset_index)
     }
 
+    /// The loaded preset's name, as the pedal gives it.
+    pub(crate) fn loaded_name(&self) -> String {
+        self.snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.active_preset.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn device_name(&self) -> &str {
         self.snapshot
             .as_ref()
@@ -821,6 +838,10 @@ impl Panel {
 
     pub(crate) fn take_audition_events(&mut self) -> Vec<Option<i64>> {
         std::mem::take(&mut self.audition_events)
+    }
+
+    pub(crate) fn take_audition_failures(&mut self) -> Vec<i64> {
+        std::mem::take(&mut self.audition_failures)
     }
 
     pub(crate) fn preview(&mut self, name: String, bytes: &[u8]) -> Result<(), String> {
@@ -960,7 +981,13 @@ impl Panel {
     /// the pedal rebuilds its live tree from the stored preset, and the
     /// worker forgets the undo history with it.
     fn select_preset(&mut self, index: usize) {
-        if !self.dirty {
+        // While a tone is auditioned, the changes at stake are those of the
+        // preset it set aside; the worker puts that back before it switches.
+        let dirty = self
+            .hearing
+            .as_ref()
+            .map_or(self.dirty, |shown| shown.set_aside_dirty);
+        if !dirty {
             let _ = self.tx.send(Cmd::SelectPreset(index));
             return;
         }
@@ -1881,6 +1908,9 @@ impl Worker {
                     *description = next_description;
                     *value = next_value;
                 }
+                // Stepping through tones queues an audition per row; only
+                // the row stopped on is worth writing to the pedal.
+                (Cmd::Audition { .. }, next @ Cmd::Audition { .. }) => command = next,
                 (_, next) => return (command, Some(next)),
             }
         }
@@ -2200,55 +2230,15 @@ impl Worker {
                 Ok(())
             }
             Cmd::Audition { key, name, bytes } => {
-                self.restore_audition()?;
-                let preset = Preset::parse(&bytes)?;
-                let tree = self.device()?.browse(NodePath::new("root\\app")?)?;
-                let mut changes = Vec::new();
-                for record in preset.records() {
-                    let Ok(path) = NodePath::new(record.subject()) else {
-                        continue;
-                    };
-                    let Some(description) = tree.get(&path).cloned() else {
-                        continue;
-                    };
-                    if !matches!(
-                        description.kind,
-                        Some(
-                            NodeKind::Float
-                                | NodeKind::Enum
-                                | NodeKind::PropertyList
-                                | NodeKind::Array
-                        )
-                    ) {
-                        continue;
+                let played = self.audition(key, &name, &bytes);
+                if played.is_err() {
+                    self.send(Evt::AuditionFailed(key));
+                    // What played before was put back on the way.
+                    if self.audition_original.is_empty() {
+                        self.send(Evt::Auditioning(None));
                     }
-                    let Some(value) = record.value().get("value").cloned() else {
-                        continue;
-                    };
-                    if description.validate_value(&value).is_err() {
-                        continue;
-                    }
-                    let Some(original) = description.value.clone() else {
-                        continue;
-                    };
-                    changes.push((path, description, original, value));
                 }
-                let mut written: Vec<(NodePath, NodeDescription, Value)> = Vec::new();
-                for (path, description, original, value) in changes {
-                    if let Err(error) = self.device()?.write_node(path.clone(), &description, value)
-                    {
-                        for (path, description, original) in written.into_iter().rev() {
-                            let _ = self.device()?.write_node(path, &description, original);
-                        }
-                        return Err(error.into());
-                    }
-                    written.push((path, description, original));
-                }
-                self.audition_original = written;
-                self.refresh(false)?;
-                self.send(Evt::Auditioning(Some(key)));
-                self.send(Evt::Success(format!("Auditioning {name}")));
-                Ok(())
+                played
             }
             Cmd::EndAudition => {
                 self.restore_audition()?;
@@ -2699,6 +2689,54 @@ impl Worker {
         self.device
             .as_mut()
             .ok_or_else(|| WorkError::Other("StompStation PRO is not connected".into()))
+    }
+
+    /// Play a preset's values in the live tree, putting back any audition
+    /// before it, and remember what each value replaced.
+    fn audition(&mut self, key: i64, name: &str, bytes: &[u8]) -> WorkResult<()> {
+        self.restore_audition()?;
+        let preset = Preset::parse(bytes)?;
+        let tree = self.device()?.browse(NodePath::new("root\\app")?)?;
+        let mut changes = Vec::new();
+        for record in preset.records() {
+            let Ok(path) = NodePath::new(record.subject()) else {
+                continue;
+            };
+            let Some(description) = tree.get(&path).cloned() else {
+                continue;
+            };
+            if !matches!(
+                description.kind,
+                Some(NodeKind::Float | NodeKind::Enum | NodeKind::PropertyList | NodeKind::Array)
+            ) {
+                continue;
+            }
+            let Some(value) = record.value().get("value").cloned() else {
+                continue;
+            };
+            if description.validate_value(&value).is_err() {
+                continue;
+            }
+            let Some(original) = description.value.clone() else {
+                continue;
+            };
+            changes.push((path, description, original, value));
+        }
+        let mut written: Vec<(NodePath, NodeDescription, Value)> = Vec::new();
+        for (path, description, original, value) in changes {
+            if let Err(error) = self.device()?.write_node(path.clone(), &description, value) {
+                for (path, description, original) in written.into_iter().rev() {
+                    let _ = self.device()?.write_node(path, &description, original);
+                }
+                return Err(error.into());
+            }
+            written.push((path, description, original));
+        }
+        self.audition_original = written;
+        self.refresh(false)?;
+        self.send(Evt::Auditioning(Some(key)));
+        self.send(Evt::Success(format!("Auditioning {name}")));
+        Ok(())
     }
 
     fn restore_audition(&mut self) -> WorkResult<()> {
@@ -4652,6 +4690,27 @@ root\\app\\ir\\on_off:{\"value\":\"OFF\"}\r\n";
         };
         assert_eq!(before, Value::from(0.0));
         assert_eq!(value, Value::from(3.0));
+    }
+
+    /// Stepping through tones queues an audition per row; only the one
+    /// stopped on is played, and what follows the run waits its turn.
+    #[test]
+    fn a_run_of_auditions_plays_only_the_last() {
+        let (commands, receiver) = mpsc::channel();
+        let (events, _events) = mpsc::channel();
+        let worker = Worker::new(receiver, events, egui::Context::default());
+        let audition = |key: i64| Cmd::Audition {
+            key,
+            name: format!("Tone {key}"),
+            bytes: Vec::new(),
+        };
+        commands.send(audition(2)).unwrap();
+        commands.send(audition(3)).unwrap();
+        commands.send(Cmd::EndAudition).unwrap();
+
+        let (coalesced, pending) = worker.coalesce_live_edits(audition(1));
+        assert!(matches!(coalesced, Cmd::Audition { key: 3, .. }));
+        assert!(matches!(pending, Some(Cmd::EndAudition)));
     }
 
     #[test]

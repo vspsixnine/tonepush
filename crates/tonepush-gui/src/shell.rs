@@ -125,6 +125,8 @@ pub(crate) struct PresetRow {
     pub selected: bool,
     /// Loaded, and edited since it was saved.
     pub edited: bool,
+    /// Loaded, and set aside while a tone is auditioned in its place.
+    pub heard: bool,
     pub favourite: bool,
     /// Whether the library holds it: the same, under its name but different,
     /// or not at all.
@@ -236,6 +238,16 @@ pub(crate) fn preset_row(ui: &mut Ui, row: &PresetRow, mode: RowMode) -> Respons
             ui.painter().circle_filled(centre, 6.5, theme::hot_soft());
             ui.painter().circle_filled(centre, 3.5, theme::hot());
             right -= 7.0 + 4.0;
+        }
+        if row.heard {
+            theme::paint_icon(
+                ui,
+                Icon::Volume,
+                Pos2::new(right - 6.5, y),
+                13.0,
+                theme::accent(),
+            );
+            right -= 13.0 + 4.0;
         }
         right -= 4.0;
     }
@@ -747,6 +759,8 @@ pub(crate) enum State {
     Note(String),
     /// Work in hand: a spinner and what it is.
     Busy(String),
+    /// A tone auditioned in the loaded preset's place: amber, a speaker.
+    Audition(String),
 }
 
 /// What leads a part of the state line.
@@ -784,6 +798,7 @@ pub(crate) fn state_line(ui: &mut Ui, parts: &[State], width: f32) -> Response {
             ),
             State::Note(text) => (None, text, theme::muted(), false),
             State::Busy(text) => (Some(Lead::Spinner), text, theme::muted(), false),
+            State::Audition(text) => (Some(Lead::Icon(Icon::Volume)), text, theme::accent(), true),
         };
         match lead {
             Some(Lead::Dot(colour)) => {
@@ -812,6 +827,37 @@ pub(crate) fn state_line(ui: &mut Ui, parts: &[State], width: f32) -> Response {
         x += width;
     }
     response
+}
+
+/// What a board's header says while a tone is auditioned, after its own
+/// words: a dot, a speaker and "Auditioning Dream Pop", in amber. Returns
+/// where it ends.
+pub(crate) fn paint_hearing_note(ui: &Ui, mut x: f32, y: f32, words: &str) -> f32 {
+    x += 6.0;
+    let dot = galley(ui, "·", theme::regular(11.5), theme::faint());
+    paint_line(ui, dot, x, y);
+    x += 12.0;
+    theme::paint_icon(
+        ui,
+        Icon::Volume,
+        Pos2::new(x + 6.0, y),
+        12.0,
+        theme::accent(),
+    );
+    x += 17.0;
+    let words = galley(ui, words, theme::semibold(11.5), theme::accent());
+    let width = words.size().x;
+    paint_line(ui, words, x, y);
+    x + width
+}
+
+/// The amber rule along a board's top edge while a tone is auditioned.
+pub(crate) fn paint_hearing_rule(ui: &Ui, board: Rect) {
+    ui.painter().rect_filled(
+        Rect::from_min_size(board.min, Vec2::new(board.width(), 2.0)),
+        CornerRadius::ZERO,
+        theme::accent(),
+    );
 }
 
 /// A small amber spinner. Repaints are paced, not continuous.
@@ -1026,6 +1072,9 @@ pub(crate) struct DeckActions<'a> {
     /// Saving waits for a backup this deck can take: the backup takes
     /// Save's place, enabled when nothing else is talking to the pedal.
     pub unlock: Option<bool>,
+    /// A tone is auditioned: what plays is not the preset's until it is
+    /// kept, so Save is off and says so.
+    pub hearing: bool,
 }
 
 /// Discard, undo, redo and Save, the way every deck ends. Laid out right to
@@ -1043,7 +1092,12 @@ pub(crate) fn deck_actions(ui: &mut Ui, actions: &DeckActions) -> DeckAsked {
         egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
         egui::Key::Z,
     );
-    if let Some(ready) = actions.unlock {
+    if actions.hearing {
+        theme::Button::new("Save")
+            .enabled(false)
+            .show(ui)
+            .on_disabled_hover_text("Keep or put back the audition first");
+    } else if let Some(ready) = actions.unlock {
         asked.unlock = theme::Button::new("Back up to unlock saving")
             .primary()
             .icon(Icon::Download)
@@ -1086,7 +1140,7 @@ pub(crate) fn deck_actions(ui: &mut Ui, actions: &DeckActions) -> DeckAsked {
         .on_hover_text(format!("Undo ({undo_key})"))
         .on_disabled_hover_text("Nothing to undo")
         .clicked();
-    if actions.dirty {
+    if actions.dirty && !actions.hearing {
         asked.discard = theme::IconButton::new(Icon::RotateCcw)
             .enabled(actions.live)
             .show(ui)
@@ -1485,6 +1539,7 @@ impl App {
     /// The rows of the HX preset list, as the sidebar draws them.
     pub(crate) fn hx_rows(&self) -> Vec<PresetRow> {
         let per_bank = self.presets_per_bank();
+        let hearing = self.shown_hearing();
         let mut rows: Vec<PresetRow> = (0..self.hx_total())
             .filter(|&index| {
                 !self.show_favorites_only || self.config.is_favorite(self.setlist, index as i64)
@@ -1498,7 +1553,11 @@ impl App {
                     empty: hx_slot_is_empty(&name),
                     name,
                     selected,
-                    edited: selected && self.dirty,
+                    edited: selected
+                        && hearing
+                            .as_ref()
+                            .map_or(self.dirty, |shown| shown.set_aside_dirty),
+                    heard: selected && hearing.is_some(),
                     favourite: self.config.is_favorite(self.setlist, index as i64),
                     library: self.slot_sync(index as i64),
                     bank_start: index % per_bank == 0,
@@ -2077,6 +2136,7 @@ impl App {
         let full = ui.max_rect();
         let live = matches!(self.connection, Connection::Online);
         let loaded = self.preset_index >= 0;
+        let hearing = self.shown_hearing();
         // The right-hand group first, from the edge in, so the title knows
         // how much room is left.
         let right = ui
@@ -2100,6 +2160,7 @@ impl App {
                             can_save: self.dirty,
                             save_refused: "Nothing to save",
                             unlock: None,
+                            hearing: hearing.is_some(),
                         },
                     );
                     if asked.save {
@@ -2163,7 +2224,19 @@ impl App {
                     |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         let size = tier.pick(theme::PRESET_NAME, theme::PRESET_NAME, 22.0);
-                        if loaded {
+                        if let Some(shown) = &hearing {
+                            // The tone playing, until it is kept or put back.
+                            let mut renaming = None;
+                            deck_title(
+                                ui,
+                                &shown.name,
+                                size,
+                                width,
+                                &mut renaming,
+                                false,
+                                "Keep or put back the audition first",
+                            );
+                        } else if loaded {
                             if let Some(name) = deck_title(
                                 ui,
                                 &self.preset_name,
@@ -2187,7 +2260,10 @@ impl App {
                             );
                             paint_line(ui, title, rect.left(), rect.center().y);
                         }
-                        let parts = self.hx_state(tier);
+                        let parts = match &hearing {
+                            Some(shown) => shown.state(tier),
+                            None => self.hx_state(tier),
+                        };
                         state_line(ui, &parts, width);
                     },
                 );

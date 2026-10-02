@@ -1044,6 +1044,10 @@ impl App {
             shell::paint_line(ui, galley, x, header_y);
             x += width;
         }
+        if let Some(shown) = self.shown_hearing() {
+            shell::paint_hearing_note(ui, x, header_y, &shown.board_note());
+            shell::paint_hearing_rule(ui, rect);
+        }
         paint_legend(ui, rect.right() - 16.0, header_y);
 
         // Every path at one tile width, so their tiles line up.

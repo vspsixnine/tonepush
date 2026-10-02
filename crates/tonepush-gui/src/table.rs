@@ -95,7 +95,7 @@ impl Cell {
                 places
                     .iter()
                     .map(|(_, state, _, _)| match state {
-                        theme::Sync::Working => '0',
+                        theme::Sync::Working | theme::Sync::Live => '0',
                         theme::Sync::Differs => '1',
                         theme::Sync::Absent => '2',
                         theme::Sync::Same => '3',
@@ -185,6 +185,12 @@ pub struct Grid {
     /// chosen from elsewhere (the loaded preset's tone) is brought to where
     /// it can be seen.
     pub reveal: Option<usize>,
+    /// Scroll no further than brings the revealed row into view, as a step
+    /// with the arrow keys does, rather than to near the top.
+    pub reveal_near: bool,
+    /// The row playing on the pedal, tinted and outlined in amber, and
+    /// whether it is still on its way.
+    pub playing: Option<(usize, bool)>,
 }
 
 impl Grid {
@@ -212,6 +218,12 @@ impl Grid {
         self.selected = self
             .selected
             .and_then(|selected| order.iter().position(|&row| row == selected));
+        self.playing = self.playing.and_then(|(playing, loading)| {
+            order
+                .iter()
+                .position(|&row| row == playing)
+                .map(|row| (row, loading))
+        });
         self.editing = self.editing.and_then(|(editing, column)| {
             order
                 .iter()
@@ -341,6 +353,7 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
     // The lines between columns show only where a column is being resized:
     // the design's table has none at rest.
     let reveal = delegate.grid.reveal;
+    let near = delegate.grid.reveal_near;
     let headers = header_height(delegate.grid);
     ui.scope(|ui| {
         ui.visuals_mut().widgets.noninteractive.bg_stroke = Stroke::NONE;
@@ -356,12 +369,16 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
         // pinned to the left at the same time.
         if let Some(row) = reveal {
             let first = delegate.grid.sticky;
-            table = table
-                .scroll_to_rows(
-                    row.saturating_sub(2) as u64..=row as u64,
-                    Some(egui::Align::Min),
-                )
-                .scroll_to_columns(first..=first, Some(egui::Align::Min));
+            table = if near {
+                table.scroll_to_rows(row as u64..=row as u64, None)
+            } else {
+                table
+                    .scroll_to_rows(
+                        row.saturating_sub(2) as u64..=row as u64,
+                        Some(egui::Align::Min),
+                    )
+                    .scroll_to_columns(first..=first, Some(egui::Align::Min))
+            };
         }
         table.show(ui, &mut delegate);
     });
@@ -614,8 +631,12 @@ impl egui_table::TableDelegate for Delegate<'_> {
         let hovered_row = pointer.is_some_and(|p| {
             p.y >= rect.top() && p.y < rect.bottom() && ui.clip_rect().x_range().contains(p.x)
         });
-        // Selection is a neutral fill: amber is kept for the next action.
-        let background = if picked {
+        // Selection is a neutral fill: amber is kept for the next action,
+        // and for the row playing on the pedal.
+        let playing = self.grid.playing.is_some_and(|(playing, _)| playing == row);
+        let background = if playing {
+            Some(theme::accent_soft())
+        } else if picked {
             Some(theme::hover())
         } else if hovered_row {
             Some(theme::alpha(theme::hover(), 0.45))
@@ -630,6 +651,21 @@ impl egui_table::TableDelegate for Delegate<'_> {
             rect.bottom() - 0.5,
             Stroke::new(1.0, theme::line_soft()),
         );
+        if playing {
+            // An outline around the whole row, drawn a cell at a time.
+            let stroke = Stroke::new(1.0, theme::accent_line());
+            ui.painter().hline(rect.x_range(), rect.top() + 0.5, stroke);
+            ui.painter()
+                .hline(rect.x_range(), rect.bottom() - 0.5, stroke);
+            if col == 0 {
+                ui.painter()
+                    .vline(rect.left() + 0.5, rect.y_range(), stroke);
+            }
+            if col + 1 == self.grid.columns.len() {
+                ui.painter()
+                    .vline(rect.right() - 0.5, rect.y_range(), stroke);
+            }
+        }
 
         // Every cell is inset from its column's edge. Without it the text sits
         // hard against the line beside it and the table reads as a spreadsheet

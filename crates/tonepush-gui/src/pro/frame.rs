@@ -90,7 +90,12 @@ impl Panel {
                     name: name.clone().unwrap_or_default(),
                     empty: name.is_none(),
                     selected,
-                    edited: selected && self.dirty,
+                    edited: selected
+                        && self
+                            .hearing
+                            .as_ref()
+                            .map_or(self.dirty, |shown| shown.set_aside_dirty),
+                    heard: selected && self.hearing.is_some(),
                     favourite: config.is_favorite(FAVORITES_SETLIST, index as i64),
                     library: if name.is_some() {
                         self.slot_sync(index, lookup)
@@ -229,7 +234,12 @@ impl Panel {
                 return;
             }
             if response.clicked() {
-                select = Some(index);
+                if self.hearing.is_some() && row.selected {
+                    // The loaded preset's own row puts it back.
+                    let _ = self.tx.send(Cmd::EndAudition);
+                } else {
+                    select = Some(index);
+                }
             }
             response.context_menu(|ui| {
                 theme::menu_width(ui, 256.0);
@@ -676,6 +686,7 @@ impl Panel {
     /// asked back.
     pub(crate) fn deck(&mut self, ui: &mut Ui, tier: Tier, sidebar_hidden: bool) -> bool {
         let snapshot = self.snapshot.clone();
+        let hearing = self.hearing.clone();
         let mut show_sidebar = false;
         let full = ui.max_rect();
         let active = snapshot.as_ref().and_then(active_preset_index);
@@ -701,6 +712,7 @@ impl Panel {
                             can_save,
                             save_refused: &refused,
                             unlock: self.unlock_offer(),
+                            hearing: hearing.is_some(),
                         },
                     );
                     if asked.save {
@@ -759,7 +771,9 @@ impl Panel {
                             .as_ref()
                             .and_then(|snapshot| snapshot.active_preset.clone())
                             .unwrap_or_else(|| "StompStation PRO".to_owned());
-                        let can_rename = active.is_some() && self.write_refusal().is_none();
+                        let name = hearing.as_ref().map_or(name, |shown| shown.name.clone());
+                        let can_rename =
+                            active.is_some() && self.write_refusal().is_none() && hearing.is_none();
                         let refusal = self
                             .write_refusal()
                             .map(|why| format!("Renaming: {}", why.to_lowercase()))
@@ -781,7 +795,10 @@ impl Panel {
                                 });
                             }
                         }
-                        let parts = self.state(tier);
+                        let parts = match &hearing {
+                            Some(shown) => shown.state(tier),
+                            None => self.state(tier),
+                        };
                         shell::state_line(ui, &parts, width);
                     },
                 );

@@ -136,6 +136,13 @@ impl App {
     pub(crate) fn library_pane(&mut self, root: &mut Ui, tier: Tier) {
         let room = root.available_rect_before_wrap().height();
         let folded = self.library_folded(tier);
+        // The audition bar, or the strip in its place, rides on top of the
+        // pane, folded or not: it is the way out of an audition.
+        let bar = if self.bar_shown() {
+            crate::audition::BAR
+        } else {
+            0.0
+        };
         // What the rest of the column keeps: the block's head on the Edit
         // page, a useful part of a page or the connect page otherwise.
         let keep = match self.page {
@@ -143,7 +150,7 @@ impl App {
             shell::Page::Edit => BLOCK_HEAD,
             shell::Page::Pedal => shell::PAGE_HEAD_WITH_TABS + 96.0,
         };
-        let max = (room - keep).max(MIN_OPEN.min(room - HEAD));
+        let max = (room - keep - bar).max(MIN_OPEN.min(room - HEAD - bar));
         let stored = self.pane_size(tier).height;
         let height = if folded {
             HEAD
@@ -151,7 +158,7 @@ impl App {
             stored.clamp(MIN_OPEN.min(max), max.max(HEAD))
         };
         egui::Panel::bottom("library-pane")
-            .exact_size(height + 1.0)
+            .exact_size(height + bar + 1.0)
             .resizable(false)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(theme::bg()))
@@ -163,8 +170,15 @@ impl App {
                     full.top() + 0.5,
                     Stroke::new(1.0, theme::line_strong()),
                 );
+                if bar > 0.0 {
+                    let strip = Rect::from_min_size(
+                        Pos2::new(full.left(), full.top() + 1.0),
+                        Vec2::new(full.width(), bar),
+                    );
+                    self.audition_bar(ui, strip, tier);
+                }
                 let head = Rect::from_min_size(
-                    Pos2::new(full.left(), full.top() + 1.0),
+                    Pos2::new(full.left(), full.top() + 1.0 + bar),
                     Vec2::new(full.width(), HEAD),
                 );
                 self.pane_head(ui, head, tier, folded);

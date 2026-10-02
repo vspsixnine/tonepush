@@ -220,46 +220,11 @@ impl<'a> Button<'a> {
         if !ui.is_rect_visible(rect) {
             return response;
         }
-        let radius = f32::from(RADIUS_CONTROL);
         let painter = ui.painter();
         let hovered = enabled && response.hovered();
         let pressed = enabled && response.is_pointer_button_down_on();
         match (tone, enabled) {
-            (Tone::Primary, true) => {
-                paint::glow(
-                    painter,
-                    rect.shrink2(Vec2::new(10.0, 8.0)),
-                    radius,
-                    Vec2::new(0.0, 8.0),
-                    20.0,
-                    0.0,
-                    rgba_of(0xd8a83b, if hovered { 0.75 } else { 0.55 }),
-                );
-                let (top, bottom) = if pressed {
-                    (rgb_of(0xd8a83b), rgb_of(0xd8a83b))
-                } else if hovered {
-                    (
-                        accent_bright(),
-                        mix(rgb_of(0xd8a83b), accent_bright(), 0.35),
-                    )
-                } else {
-                    (accent_bright(), rgb_of(0xd8a83b))
-                };
-                paint::gradient_rect(painter, rect, radius, &[(0.0, top), (1.0, bottom)]);
-                painter.line_segment(
-                    [
-                        Pos2::new(rect.left() + radius, rect.top() + 1.0),
-                        Pos2::new(rect.right() - radius, rect.top() + 1.0),
-                    ],
-                    Stroke::new(1.0, Color32::from_white_alpha(64)),
-                );
-                painter.rect_stroke(
-                    rect,
-                    CornerRadius::same(RADIUS_CONTROL),
-                    Stroke::new(1.0, accent()),
-                    egui::StrokeKind::Inside,
-                );
-            }
+            (Tone::Primary, true) => paint_primary(painter, rect, hovered, pressed),
             (Tone::Primary, false) => {
                 painter.rect(
                     rect,
@@ -361,6 +326,123 @@ impl<'a> Button<'a> {
         }
         response
     }
+}
+
+/// The amber gradient of a primary button, its glow under it.
+fn paint_primary(painter: &egui::Painter, rect: Rect, hovered: bool, pressed: bool) {
+    let radius = f32::from(RADIUS_CONTROL);
+    paint::glow(
+        painter,
+        rect.shrink2(Vec2::new(10.0, 8.0)),
+        radius,
+        Vec2::new(0.0, 8.0),
+        20.0,
+        0.0,
+        rgba_of(0xd8a83b, if hovered { 0.75 } else { 0.55 }),
+    );
+    let (top, bottom) = if pressed {
+        (rgb_of(0xd8a83b), rgb_of(0xd8a83b))
+    } else if hovered {
+        (
+            accent_bright(),
+            mix(rgb_of(0xd8a83b), accent_bright(), 0.35),
+        )
+    } else {
+        (accent_bright(), rgb_of(0xd8a83b))
+    };
+    paint::gradient_rect(painter, rect, radius, &[(0.0, top), (1.0, bottom)]);
+    painter.line_segment(
+        [
+            Pos2::new(rect.left() + radius, rect.top() + 1.0),
+            Pos2::new(rect.right() - radius, rect.top() + 1.0),
+        ],
+        Stroke::new(1.0, Color32::from_white_alpha(64)),
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(RADIUS_CONTROL),
+        Stroke::new(1.0, accent()),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// A primary button split in two: the action, with its key, and a chevron
+/// that opens its other choices. Answers the action's response and the
+/// chevron's, which a menu can hang from.
+pub fn split_button(
+    ui: &mut Ui,
+    id: egui::Id,
+    label: &str,
+    hint: Option<&str>,
+    enabled: bool,
+) -> (Response, Response) {
+    let size = Size::Medium;
+    let ink = if enabled { accent_ink() } else { faint() };
+    let text_galley = layout(ui, label, font(size.font(), Weight::SemiBold), ink);
+    let hint_galley = hint.map(|hint| layout(ui, hint, medium(11.0), alpha(ink, 0.7)));
+    let gap = 7.0;
+    let mut main = size.padding() * 2.0 + text_galley.size().x;
+    if let Some(galley) = &hint_galley {
+        main += gap + galley.size().x;
+    }
+    let chevron = 28.0;
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(main + chevron, size.height()), Sense::hover());
+    let left = Rect::from_min_max(rect.min, Pos2::new(rect.left() + main, rect.bottom()));
+    let right = Rect::from_min_max(Pos2::new(left.right(), rect.top()), rect.max);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let action = ui.interact(left, id.with("action"), sense);
+    let menu = ui.interact(right, id.with("menu"), sense);
+    if !ui.is_rect_visible(rect) {
+        return (action, menu);
+    }
+    let painter = ui.painter();
+    if enabled {
+        let hovered = action.hovered() || menu.hovered();
+        let pressed = action.is_pointer_button_down_on() || menu.is_pointer_button_down_on();
+        paint_primary(painter, rect, hovered, pressed);
+        // The half under the pointer, lit a little more.
+        for (half, response) in [(left, &action), (right, &menu)] {
+            if response.hovered() {
+                painter.rect_filled(
+                    half.shrink(1.0),
+                    CornerRadius::same(RADIUS_CONTROL - 1),
+                    Color32::from_white_alpha(18),
+                );
+            }
+        }
+        painter.vline(
+            right.left(),
+            (rect.top() + 1.0)..=(rect.bottom() - 1.0),
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(26, 20, 5, 72)),
+        );
+    } else {
+        painter.rect(
+            rect,
+            CornerRadius::same(RADIUS_CONTROL),
+            raised(),
+            Stroke::new(1.0, line()),
+            egui::StrokeKind::Inside,
+        );
+        painter.vline(
+            right.left(),
+            (rect.top() + 1.0)..=(rect.bottom() - 1.0),
+            Stroke::new(1.0, line()),
+        );
+    }
+    let y = rect.center().y;
+    let x = left.left() + size.padding();
+    let width = text_galley.size().x;
+    centred_galley(ui, text_galley, x, y);
+    if let Some(galley) = hint_galley {
+        centred_galley(ui, galley, x + width + gap - 3.0, y);
+    }
+    paint_icon(ui, Icon::ChevronDown, right.center(), 14.0, ink);
+    (action, menu)
 }
 
 /// The darker fill a secondary button takes while pressed.
@@ -728,6 +810,8 @@ pub struct Chip<'a> {
     icon: Option<Icon>,
     dot: bool,
     height: f32,
+    outline: Option<Color32>,
+    spinner: bool,
 }
 
 impl<'a> Chip<'a> {
@@ -738,7 +822,21 @@ impl<'a> Chip<'a> {
             icon: None,
             dot: false,
             height: 20.0,
+            outline: None,
+            spinner: false,
         }
+    }
+
+    /// A line around it, as the audition bar's Playing has.
+    pub fn outline(mut self, colour: Color32) -> Self {
+        self.outline = Some(colour);
+        self
+    }
+
+    /// A turning arc in the icon's place, for work under way.
+    pub fn spinner(mut self) -> Self {
+        self.spinner = true;
+        self
     }
 
     pub fn mood(mut self, mood: Mood) -> Self {
@@ -766,7 +864,7 @@ impl<'a> Chip<'a> {
         let (ink, fill, stroke) = self.mood.colours();
         let galley = layout(ui, self.text, semibold(11.0), ink);
         let mut width = 14.0 + galley.size().x;
-        if self.icon.is_some() {
+        if self.icon.is_some() || self.spinner {
             width += 12.0 + 5.0;
         }
         if self.dot {
@@ -780,7 +878,9 @@ impl<'a> Chip<'a> {
                 rect,
                 CornerRadius::same(RADIUS_CHIP),
                 fill,
-                stroke.map_or(Stroke::NONE, |colour| Stroke::new(1.0, colour)),
+                self.outline
+                    .or(stroke)
+                    .map_or(Stroke::NONE, |colour| Stroke::new(1.0, colour)),
                 egui::StrokeKind::Inside,
             );
             let mut x = rect.left() + 7.0;
@@ -789,7 +889,23 @@ impl<'a> Chip<'a> {
                 painter.circle_filled(Pos2::new(x + 3.0, y), 3.0, ink);
                 x += 11.0;
             }
-            if let Some(icon) = self.icon {
+            if self.spinner {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(33));
+                let turn = std::f32::consts::TAU;
+                let start = (ui.input(|input| input.time) as f32 * turn) % turn;
+                let centre = Pos2::new(x + 6.0, y);
+                painter.circle_stroke(centre, 4.5, Stroke::new(1.5, alpha(ink, 0.25)));
+                paint::arc(
+                    painter,
+                    centre,
+                    4.5,
+                    start,
+                    std::f32::consts::PI * 1.2,
+                    Stroke::new(1.5, ink),
+                );
+                x += 17.0;
+            } else if let Some(icon) = self.icon {
                 paint_icon(ui, icon, Pos2::new(x + 6.0, y), 12.0, ink);
                 x += 17.0;
             }
@@ -1555,6 +1671,50 @@ fn menu_row(
         ui.close();
     }
     response
+}
+
+/// A menu row whose shortcut is a run of keycaps at its right: "Ctrl"
+/// "Enter".
+pub fn menu_keyed(
+    ui: &mut Ui,
+    icon: Option<Icon>,
+    text_: &str,
+    keys: &[&str],
+    enabled: bool,
+) -> Response {
+    let response = menu_row(ui, icon, text_, None, false, enabled);
+    if !keys.is_empty() && ui.is_rect_visible(response.rect) {
+        let width = keycaps_width(ui, keys);
+        paint_keycaps(
+            ui,
+            response.rect.right() - 10.0 - width,
+            response.rect.center().y,
+            keys,
+            enabled,
+        );
+    }
+    response
+}
+
+/// A few quiet sentences at the foot of a menu, saying what its choices do.
+pub fn menu_note(ui: &mut Ui, words: &str) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 10,
+            right: 10,
+            top: 2,
+            bottom: 6,
+        })
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(words)
+                        .font(regular(12.0))
+                        .color(muted()),
+                )
+                .wrap(),
+            );
+        });
 }
 
 /// Keys as small raised caps, 18 points tall, the way the design writes a

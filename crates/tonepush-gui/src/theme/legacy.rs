@@ -59,6 +59,8 @@ pub enum Sync {
     Differs,
     /// On its way there now.
     Working,
+    /// Playing on the pedal now, in place of the loaded preset.
+    Live,
     /// Not knowable yet, because the pedal has not been read.
     #[default]
     Unknown,
@@ -128,6 +130,7 @@ pub fn place_enabled(ui: &mut Ui, icon: Icon, state: Sync, enabled: bool) -> Res
             accent().gamma_multiply(pulse)
         }
         Sync::Same => text(),
+        Sync::Live => accent(),
         Sync::Absent => {
             if hot {
                 text()

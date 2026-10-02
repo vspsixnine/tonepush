@@ -341,9 +341,14 @@ pub enum Evt {
     },
     /// The edit buffer has been committed to the preset.
     Saved,
-    /// Which cloud Tone is temporarily in the edit buffer, or `None` once the
-    /// original has been restored or the audition has been kept.
+    /// Which tone is temporarily in the edit buffer, by the key the editor
+    /// gave it, or `None` once the original has been restored or the
+    /// audition has been kept.
     Auditioning(Option<i64>),
+    /// The tone asked to play under this key could not be played: it was
+    /// unreadable, or the pedal refused it. Whatever was playing before, if
+    /// anything, still is, as the [`Evt::Auditioning`] after it says.
+    AuditionFailed(i64),
     /// An audition has put the edit buffer aside, and whether that buffer
     /// had changes not saved. The audition's own buffer reports clean, so
     /// without this a switch to another preset would not ask, and ending the
@@ -624,23 +629,8 @@ impl Worker {
         let mut last_poll = Instant::now();
         loop {
             match self.cmds.recv_timeout(Duration::from_millis(120)) {
-                Ok(mut cmd) => {
-                    // Someone riding the preset list queues a select per
-                    // click, and only the last one is where they meant to
-                    // land. Collapsing the run spares the device a switch
-                    // per click; a dozen switches stacked up is precisely
-                    // the load that wedges it.
-                    let mut follow_up = None;
-                    if matches!(cmd, Cmd::SelectPreset(_)) {
-                        while let Ok(next) = self.cmds.try_recv() {
-                            if matches!(next, Cmd::SelectPreset(_)) {
-                                cmd = next;
-                            } else {
-                                follow_up = Some(next);
-                                break;
-                            }
-                        }
-                    }
+                Ok(cmd) => {
+                    let (cmd, follow_up) = self.gather(cmd);
                     // Bracket the work so the UI can say the device is being
                     // spoken to; it only shows the state when it lasts.
                     self.send(Evt::Busy(true));
@@ -665,6 +655,37 @@ impl Worker {
                 self.poll();
             }
         }
+    }
+
+    /// Collapse a run of the same kind of request into its last one.
+    ///
+    /// Someone riding the preset list queues a select per click, and only
+    /// the last one is where they meant to land; someone stepping through
+    /// the library with the arrow keys queues an audition per row, and only
+    /// the row they stopped on is the one they want to hear. Collapsing the
+    /// run spares the device a switch, or a whole preset written, per step;
+    /// a dozen switches stacked up is precisely the load that wedges it. The
+    /// first request of another kind is handed back to follow.
+    fn gather(&self, mut cmd: Cmd) -> (Cmd, Option<Cmd>) {
+        let collapses = |cmd: &Cmd| -> u8 {
+            match cmd {
+                Cmd::SelectPreset(_) => 1,
+                Cmd::AuditionDocument { .. } | Cmd::AuditionSteps { .. } => 2,
+                _ => 0,
+            }
+        };
+        let kind = collapses(&cmd);
+        if kind == 0 {
+            return (cmd, None);
+        }
+        while let Ok(next) = self.cmds.try_recv() {
+            if collapses(&next) == kind {
+                cmd = next;
+            } else {
+                return (cmd, Some(next));
+            }
+        }
+        (cmd, None)
     }
 
     fn handle(&mut self, cmd: Cmd) {
@@ -1612,10 +1633,11 @@ impl Worker {
 
     fn audition_document(&mut self, key: i64, name: &str, bytes: &[u8]) {
         let Some(preset) = hx_proto::Preset::parse(bytes) else {
-            return self.send(Evt::Failed(format!("{name} is not a readable preset")));
+            self.send(Evt::Failed(format!("{name} is not a readable preset")));
+            return self.send(Evt::AuditionFailed(key));
         };
         if !self.begin_audition() {
-            return;
+            return self.send(Evt::AuditionFailed(key));
         }
         if self.run_on_device(|device| device.write_preset(&preset)) {
             self.dirty = false;
@@ -1626,20 +1648,23 @@ impl Worker {
             self.send(Evt::Auditioning(Some(key)));
             self.send(Evt::Activity(format!("auditioning {name}")));
         } else {
+            self.send(Evt::AuditionFailed(key));
             self.send(Evt::Auditioning(self.audition.as_ref().map(|a| a.key)));
         }
     }
 
     fn audition_steps(&mut self, key: i64, name: &str, blocks: &[ApplyBlock]) {
         if !self.begin_audition() {
-            return;
+            return self.send(Evt::AuditionFailed(key));
         }
         if let Err(why) = self.apply_steps(blocks) {
             self.send(Evt::Failed(why));
+            self.send(Evt::AuditionFailed(key));
             self.end_audition();
             return;
         }
         let Some(preset) = self.read_settled() else {
+            self.send(Evt::AuditionFailed(key));
             self.end_audition();
             return;
         };
@@ -3627,6 +3652,62 @@ mod tests {
             "the edit the audition put aside was saved"
         );
         assert_eq!(pedal.loaded.1, 5);
+    }
+
+    /// Stepping through the library with the arrow keys queues an audition
+    /// per row; only the row stopped on is written to the pedal, and the
+    /// first request of another kind follows it.
+    #[test]
+    fn a_run_of_auditions_plays_only_the_last() {
+        let (commands, cmds) = mpsc::channel();
+        let (tx, _events) = mpsc::channel();
+        let worker = Worker::new(
+            cmds,
+            Events {
+                tx,
+                repaint: RepaintSignal::default(),
+            },
+            None,
+        );
+        let audition = |key: i64| Cmd::AuditionDocument {
+            key,
+            name: format!("Tone {key}"),
+            bytes: Vec::new(),
+        };
+        commands.send(audition(2)).unwrap();
+        commands.send(audition(3)).unwrap();
+        commands.send(Cmd::SelectBlock(1)).unwrap();
+        commands.send(audition(4)).unwrap();
+
+        let (cmd, next) = worker.gather(audition(1));
+        assert!(matches!(cmd, Cmd::AuditionDocument { key: 3, .. }));
+        assert!(matches!(next, Some(Cmd::SelectBlock(1))));
+        assert!(
+            matches!(
+                worker.cmds.try_recv(),
+                Ok(Cmd::AuditionDocument { key: 4, .. })
+            ),
+            "what comes after waits its turn"
+        );
+        let (cmd, next) = worker.gather(Cmd::SelectBlock(2));
+        assert!(matches!(cmd, Cmd::SelectBlock(2)) && next.is_none());
+    }
+
+    /// A tone that cannot be played says so under the key it was asked for,
+    /// and nothing is set aside for it.
+    #[test]
+    fn an_unreadable_tone_is_refused_under_its_key() {
+        let pedal = Pedal::new();
+        let (mut worker, events) = worker(&pedal);
+        worker.handle(Cmd::AuditionDocument {
+            key: 9,
+            name: "Broken".into(),
+            bytes: vec![1, 2, 3],
+        });
+        let said: Vec<Evt> = events.try_iter().collect();
+        assert!(said.iter().any(|e| matches!(e, Evt::AuditionFailed(9))));
+        assert!(worker.audition.is_none());
+        assert!(!pedal.lock().unwrap().opcodes().contains(&op::WRITE_PRESET));
     }
 
     /// A copied block is the block, not the slot it sat in: pasted after
