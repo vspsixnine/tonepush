@@ -214,7 +214,7 @@ fn paint_face(ui: &Ui, rect: Rect, face: &Face, colour: Color32) {
 
 /// What a card's badge says.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Badge {
+pub(crate) enum Badge {
     /// What the block held before the first try.
     WasHere,
     /// What the block holds, before anything has been tried.
@@ -728,7 +728,7 @@ impl App {
                 let mut chose = None;
                 if rail_row(
                     ui,
-                    RailRow::Recent,
+                    RailRow::Icon(Icon::History),
                     "Recent",
                     recent_models.len(),
                     !searching && showing == Rail::Recent,
@@ -860,7 +860,10 @@ impl App {
                         for model in chunk {
                             let colour = colour_of(model);
                             let face = browser.faces.get(&model.id).cloned().unwrap_or_default();
-                            if model_card(ui, model, &face, colour, card, badge_of(model)).clicked()
+                            let badge = badge_of(model);
+                            if model_card(ui, &model.name, &face, colour, card, badge)
+                                .on_hover_text(card_hover(&model.name, badge))
+                                .clicked()
                             {
                                 asked = Some(Asked::Pick(model.id.clone()));
                             }
@@ -1080,13 +1083,21 @@ impl Browser {
 }
 
 /// What a rail row shows before its name.
-enum RailRow<'a> {
-    Recent,
+pub(crate) enum RailRow<'a> {
+    /// An interface icon: Recent's clock, or every block's grid.
+    Icon(Icon),
+    /// A category's drawing in its colour.
     Category(&'a str),
 }
 
 /// One row of the rail: its drawing, its name and how many it holds.
-fn rail_row(ui: &mut Ui, row: RailRow, name: &str, count: usize, on: bool) -> egui::Response {
+pub(crate) fn rail_row(
+    ui: &mut Ui,
+    row: RailRow,
+    name: &str,
+    count: usize,
+    on: bool,
+) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 29.0), Sense::click());
     if on {
@@ -1102,7 +1113,7 @@ fn rail_row(ui: &mut Ui, row: RailRow, name: &str, count: usize, on: bool) -> eg
     let y = rect.center().y;
     let glyph = Pos2::new(rect.left() + 8.0 + 8.0, y);
     match row {
-        RailRow::Recent => theme::paint_icon(ui, Icon::History, glyph, 16.0, theme::text_soft()),
+        RailRow::Icon(icon) => theme::paint_icon(ui, icon, glyph, 16.0, theme::text_soft()),
         RailRow::Category(category) => {
             if let Some(drawing) = theme::category_icon(category) {
                 drawing.paint(
@@ -1137,9 +1148,9 @@ fn rail_row(ui: &mut Ui, row: RailRow, name: &str, count: usize, on: bool) -> eg
 }
 
 /// One model as a card: its face, its name and the names of its controls.
-fn model_card(
+pub(crate) fn model_card(
     ui: &mut Ui,
-    model: &Model,
+    name: &str,
     face: &Face,
     colour: Color32,
     width: f32,
@@ -1181,16 +1192,16 @@ fn model_card(
         Vec2::new(rect.width() - 14.0, 70.0),
     );
     paint_face(ui, face_rect, face, colour);
-    let name = shell::elided(
+    let title = shell::elided(
         ui,
-        model.name.clone(),
+        name,
         theme::semibold(theme::BODY),
         theme::text(),
         rect.width() - 20.0,
     );
     shell::paint_line(
         ui,
-        name,
+        title,
         rect.left() + 10.0,
         face_rect.bottom() + 4.0 + 2.0 + 8.5,
     );
@@ -1210,11 +1221,16 @@ fn model_card(
     if let Some(badge) = badge {
         badge.paint(ui, rect);
     }
-    response.on_hover_text(match badge {
-        Some(Badge::Playing) => format!("{} is on the pedal", model.name),
-        Some(Badge::WasHere) => format!("Put {} back", model.name),
-        _ => format!("Play {} on the pedal", model.name),
-    })
+    response
+}
+
+/// What a model's card says under the pointer.
+fn card_hover(name: &str, badge: Option<Badge>) -> String {
+    match badge {
+        Some(Badge::Playing) => format!("{name} is on the pedal"),
+        Some(Badge::WasHere) => format!("Put {name} back"),
+        _ => format!("Play {name} on the pedal"),
+    }
 }
 
 /// One model as a row of the list.
