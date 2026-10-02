@@ -46,21 +46,24 @@ hx-catalog = { path = "crates/hx-catalog" }
 # (emilk/egui#8398), and eframe pacing Wayland frames by the compositor's frame
 # callbacks, so a window the compositor stops showing never blocks in a vsync
 # swap (emilk/egui#8631). On Wayland, egui-winit uses winit's clipboard (see
-# winit below), and each emoji cluster is laid out one emoji wide. Every egui
-# crate comes from the same revision so they share one emath and epaint. Drop
-# this once egui releases these.
-ecolor = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-eframe = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-egui = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-egui-wgpu = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-egui-winit = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-egui_extras = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-egui_glow = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
+# winit below), and each emoji cluster is laid out one emoji wide. It also
+# carries the accesskit focus fix (emilk/egui#8621), a compatibility-profile
+# fallback for old Windows GL drivers (emilk/egui#8655) and the zoom factor
+# saved with the window size (emilk/egui#8656). Every egui crate comes from the
+# same revision so they share one emath and epaint. Drop this once egui
+# releases these.
+ecolor = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+eframe = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+egui = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+egui-wgpu = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+egui-winit = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+egui_extras = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+egui_glow = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
 # Test only: renders the editor offscreen for the design screenshots.
-egui_kittest = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-emath = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-epaint = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
-epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "61a38149a4010ff9b8257dc6a03b98818b98fd02" }
+egui_kittest = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+emath = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+epaint = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
+epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "ba6790fe7cf46e58e8d27ce1524cbfdee745e938" }
 # crmne/winit apps-0.30, shared with the same apps: winit 0.30.13 plus Wayland
 # `Occluded` for the xdg-shell suspended state with commits on the app's behalf
 # while it isn't presenting (rust-windowing/winit#4709, #4710), which eframe
@@ -69,5 +72,7 @@ epaint_default_fonts = { git = "https://github.com/crmne/egui", rev = "61a38149a
 # offers the clipboard through one data device, which the egui fork above
 # uses: Hyprland sends the selection and drags only to a client's first data
 # device, so a second one for the clipboard broke paste (crmne/spotifast#614).
-# Drop the fork when a winit release includes the Wayland changes.
-winit = { git = "https://github.com/crmne/winit", rev = "fb8b24c3ec3f2c499daa92aeb4e783a8efa2e973" }
+# On macOS a dropped window is ordered out and flushed before it closes, so it
+# does not linger on Touch Bar Macs (rust-windowing/winit#4728).
+# Drop the fork when a winit release includes these changes.
+winit = { git = "https://github.com/crmne/winit", rev = "ed7caa9023f10b397f5b6ec8284a840cbd8a6f65" }
