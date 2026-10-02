@@ -9,7 +9,7 @@ use egui::RichText;
 use serde_json::Value;
 use voidx_client::backup::{self, ArmedRollback};
 use voidx_client::{BlobList, Device, Identity, SerialLink, UploadStep, WriteSafety};
-use voidx_proto::{NodeDescription, NodeKind, NodePath, Preset};
+use voidx_proto::{NodeDescription, NodeKind, NodePath, Preset, Router};
 
 use crate::{config, theme, LibraryLookup};
 
@@ -18,6 +18,8 @@ mod firmware;
 mod frame;
 mod libraries;
 mod pane;
+mod picker;
+mod routing;
 mod settings;
 pub(crate) use frame::{slot_label, Picked};
 use libraries::LibraryFacts;
@@ -111,6 +113,13 @@ enum Cmd {
         value: Value,
         persistent: bool,
     },
+    /// Write a whole 2.x chain, computed from `before`, the one the pedal
+    /// last reported; the pedal's reading of it afterwards is the result.
+    SetRouter {
+        description: Box<NodeDescription>,
+        before: Router,
+        chain: Router,
+    },
     UseRollback(PathBuf),
     SavePreset(String),
     Rename {
@@ -202,6 +211,9 @@ enum Evt {
         path: String,
         value: Value,
     },
+    /// A chain was written: what the pedal read back, or nothing when the
+    /// write failed.
+    Routed(Option<Value>),
     PresetRead {
         index: usize,
         name: String,
@@ -322,6 +334,19 @@ pub(crate) struct Panel {
     update_mode: bool,
     /// The Pedal page's Firmware tab was asked for from another page.
     page_request: bool,
+    /// The block picker, open on a position of the 2.x chain.
+    picking: Option<routing::Picking>,
+    /// A chain sent to the pedal and not answered yet. The board keeps the
+    /// chain it has, and takes no other edit, until the pedal says what it
+    /// kept.
+    routing: bool,
+    /// A block being dragged along the 2.x chain, by its position.
+    route_drag: Option<usize>,
+    /// The block to select once the pedal says the chain holds it.
+    select_routed: Option<String>,
+    /// What the 2.x board last brought into view: a block, or a position
+    /// the picker is open on.
+    route_focus: Option<String>,
 }
 
 impl Panel {
@@ -388,6 +413,11 @@ impl Panel {
             firmware: None,
             update_mode: false,
             page_request: false,
+            picking: None,
+            routing: false,
+            route_drag: None,
+            select_routed: None,
+            route_focus: None,
         };
         // A test builds an App, and an App builds this panel: it must never
         // reach for a StompStation PRO that happens to be plugged into the
@@ -418,6 +448,7 @@ impl Panel {
                     self.update_mode = false;
                     self.status.clear();
                     self.preset_hashes.clear();
+                    self.routing = false;
                     let version = snapshot.identity.version.clone();
                     self.install_snapshot(snapshot, true);
                     // Back after an update: check what it runs.
@@ -462,18 +493,13 @@ impl Panel {
                 Ok(Evt::Snapshot { snapshot, baseline }) => {
                     self.install_snapshot(snapshot, baseline);
                 }
-                Ok(Evt::NodeValue { path, value }) => {
-                    self.drafts.insert(path.clone(), value.clone());
-                    if let Some(snapshot) = &mut self.snapshot {
-                        for (node, description) in
-                            snapshot.app.iter_mut().chain(snapshot.settings.iter_mut())
-                        {
-                            if node.as_str() == path {
-                                description.value = Some(value.clone());
-                            }
-                        }
+                Ok(Evt::NodeValue { path, value }) => self.set_value(&path, value),
+                Ok(Evt::Routed(value)) => {
+                    self.routing = false;
+                    if let Some(value) = value {
+                        self.set_value(voidx_proto::router::PATH, value);
                     }
-                    self.recompute_dirty();
+                    self.select_routed = None;
                 }
                 Ok(Evt::PresetRead {
                     index,
@@ -571,6 +597,9 @@ impl Panel {
                     self.typing = None;
                     self.facts = LibraryFacts::default();
                     self.update_mode = false;
+                    self.routing = false;
+                    self.picking = None;
+                    self.route_drag = None;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -608,14 +637,74 @@ impl Panel {
             }
         }
         self.save_name = snapshot.active_preset.clone().unwrap_or_default();
-        let groups = app_groups(&snapshot);
+        // On 2.x only the chain's blocks are on the board to be chosen.
+        let groups = match routing::Chain::of(&snapshot) {
+            Some(chain) => chain.groups(),
+            None => app_groups(&snapshot),
+        };
         if self.selected_group != INPUT_GROUP
             && self.selected_group != "output"
             && !groups.contains(&self.selected_group)
         {
             self.selected_group = groups.first().cloned().unwrap_or_default();
         }
+        if baseline {
+            // Another preset, or the same one reloaded: a position chosen
+            // or a block held belonged to the chain that was there.
+            self.picking = None;
+            self.route_drag = None;
+        }
         self.snapshot = Some(snapshot);
+    }
+
+    /// A node's value as the pedal now has it, in the drafts and the
+    /// snapshot alike.
+    fn set_value(&mut self, path: &str, value: Value) {
+        let routed = path == voidx_proto::router::PATH;
+        // Where the selected block was, for when the new chain lacks it.
+        let was = routed
+            .then(|| self.snapshot.as_ref().and_then(routing::Chain::of))
+            .flatten()
+            .and_then(|chain| chain.position_of(&self.selected_group));
+        self.drafts.insert(path.to_owned(), value.clone());
+        if let Some(snapshot) = &mut self.snapshot {
+            for (node, description) in snapshot.app.iter_mut().chain(snapshot.settings.iter_mut()) {
+                if node.as_str() == path {
+                    description.value = Some(value.clone());
+                }
+            }
+        }
+        self.recompute_dirty();
+        if routed {
+            self.settle_route(was);
+        }
+    }
+
+    /// The chain changed: select the block an edit put in, and when the
+    /// selected block left the chain, the one nearest where it was.
+    fn settle_route(&mut self, was: Option<usize>) {
+        let Some(chain) = self.snapshot.as_ref().and_then(routing::Chain::of) else {
+            return;
+        };
+        let groups = chain.groups();
+        if let Some(group) = self.select_routed.take() {
+            if groups.contains(&group) && group != self.selected_group {
+                self.selected_group = group;
+                self.typing = None;
+            }
+        }
+        if self.selected_group == INPUT_GROUP
+            || self.selected_group == "output"
+            || groups.contains(&self.selected_group)
+        {
+            return;
+        }
+        let was = was.unwrap_or(0);
+        let nearest = (was..chain.positions())
+            .chain((0..was).rev())
+            .find_map(|position| chain.held(position).map(|block| block.group.clone()));
+        self.selected_group = nearest.unwrap_or_else(|| "output".to_owned());
+        self.typing = None;
     }
 
     fn recompute_dirty(&mut self) {
@@ -730,6 +819,19 @@ impl Panel {
             .clone()
             .ok_or_else(|| "connect a StompStation PRO to inspect its preset schema".to_owned())?;
         let preset = Preset::parse(bytes).map_err(|error| error.to_string())?;
+        // Firmware 2.x loads the default chain for a preset that has no
+        // router record, as every preset saved on 1.5.12 has none.
+        if let Some(default) =
+            routing::Chain::of(&snapshot).and_then(|chain| chain.node.defaulted())
+        {
+            if let Some((_, description)) = snapshot
+                .app
+                .iter_mut()
+                .find(|(path, _)| path.as_str() == voidx_proto::router::PATH)
+            {
+                description.value = Some(default.to_value());
+            }
+        }
         for record in preset.records() {
             let Some((_, description)) = snapshot
                 .app
@@ -988,7 +1090,7 @@ impl Panel {
                 ui.add_space(6.0);
                 let g = crate::board::Geometry::pro(tier);
                 let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), g.top + g.tile_height + g.bottom),
+                    egui::vec2(ui.available_width(), board::board_height(&snapshot, tier)),
                     egui::Sense::hover(),
                 );
                 ui.painter().rect_filled(
@@ -1696,12 +1798,14 @@ impl Worker {
             let (command, next) = self.coalesce_live_edits(command);
             pending = next;
             let looking = matches!(command, Cmd::Connect);
+            // A live edit is answered at once; the controls stay as they are
+            // while it goes.
             let show_busy = !matches!(
                 &command,
                 Cmd::SetNode {
                     persistent: false,
                     ..
-                }
+                } | Cmd::SetRouter { .. }
             );
             if show_busy {
                 self.send(Evt::Busy(true));
@@ -1877,6 +1981,42 @@ impl Worker {
                         before,
                         after: value,
                     });
+                }
+                Ok(())
+            }
+            Cmd::SetRouter {
+                description,
+                before,
+                chain,
+            } => {
+                let written = self
+                    .device()
+                    .and_then(|device| Ok(device.write_router(&chain)?));
+                let after = match written {
+                    Ok(after) => after,
+                    Err(error) => {
+                        self.send(Evt::Routed(None));
+                        return Err(error);
+                    }
+                };
+                self.send(Evt::Routed(Some(after.to_value())));
+                if after == before {
+                    self.send(Evt::Failed("The pedal kept the chain as it was".into()));
+                    return Ok(());
+                }
+                // One edit, one undo step, whatever came before it.
+                self.record_transaction(vec![NodeEdit {
+                    path: NodePath::new(voidx_proto::router::PATH)?,
+                    description: *description,
+                    before: before.to_value(),
+                    after: after.to_value(),
+                }]);
+                if after != chain {
+                    self.send(Evt::Success(
+                        "The pedal kept a different chain from the one sent; the board shows \
+                         what it plays"
+                            .into(),
+                    ));
                 }
                 Ok(())
             }
@@ -2465,39 +2605,38 @@ impl Worker {
         } else {
             (0..transaction.len()).collect()
         };
-        let mut applied: Vec<usize> = Vec::new();
+        // Each edit written, and the value the pedal has for it now.
+        let mut applied: Vec<(usize, Value)> = Vec::new();
         for index in order {
             let edit = &transaction[index];
             let target = if undo { &edit.before } else { &edit.after };
-            if let Err(error) = self.write_edit(edit, target.clone()) {
-                for applied_index in applied.into_iter().rev() {
-                    let applied_edit = &transaction[applied_index];
-                    let restore = if undo {
-                        applied_edit.after.clone()
+            match self.write_edit(edit, target.clone()) {
+                Ok(now) => applied.push((index, now)),
+                Err(error) => {
+                    for (applied_index, _) in applied.into_iter().rev() {
+                        let applied_edit = &transaction[applied_index];
+                        let restore = if undo {
+                            applied_edit.after.clone()
+                        } else {
+                            applied_edit.before.clone()
+                        };
+                        let _ = self.write_edit(applied_edit, restore);
+                    }
+                    if undo {
+                        self.history.push(transaction);
                     } else {
-                        applied_edit.before.clone()
-                    };
-                    let _ = self.write_edit(applied_edit, restore);
+                        self.future.push(transaction);
+                    }
+                    self.report_history();
+                    return Err(error);
                 }
-                if undo {
-                    self.history.push(transaction);
-                } else {
-                    self.future.push(transaction);
-                }
-                self.report_history();
-                return Err(error);
             }
-            applied.push(index);
         }
 
-        for edit in &transaction {
+        for (index, now) in applied {
             self.send(Evt::NodeValue {
-                path: edit.path.to_string(),
-                value: if undo {
-                    edit.before.clone()
-                } else {
-                    edit.after.clone()
-                },
+                path: transaction[index].path.to_string(),
+                value: now,
             });
         }
         if undo {
@@ -2514,10 +2653,19 @@ impl Worker {
         Ok(())
     }
 
-    fn write_edit(&mut self, edit: &NodeEdit, value: Value) -> WorkResult<()> {
+    /// Write one edit's value back, and return what the pedal holds now: a
+    /// chain is written whole and read back, so the board shows what the
+    /// pedal kept.
+    fn write_edit(&mut self, edit: &NodeEdit, value: Value) -> WorkResult<Value> {
         let device = self.device()?;
-        device.write_node(edit.path.clone(), &edit.description, value)?;
-        Ok(())
+        if edit.path.as_str() == voidx_proto::router::PATH {
+            let chain = Router::from_value(&value).map_err(|error| {
+                WorkError::Other(format!("The chain to put back is not a chain: {error}"))
+            })?;
+            return Ok(device.write_router(&chain)?.to_value());
+        }
+        device.write_node(edit.path.clone(), &edit.description, value.clone())?;
+        Ok(value)
     }
 
     fn device(&mut self) -> WorkResult<&mut Device<SerialLink>> {
@@ -4052,6 +4200,13 @@ pub(crate) mod demo {
                 DemoChain::ThreeWay => "chorus",
             }
             .into();
+            if chain == DemoChain::Picking {
+                self.picking = Some(routing::Picking {
+                    position: 9,
+                    replacing: None,
+                    category: None,
+                });
+            }
         }
 
         /// Which slots hold what the library holds, as a backup would say.

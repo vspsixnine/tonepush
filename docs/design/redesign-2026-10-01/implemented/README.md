@@ -401,3 +401,52 @@ Fixes after the stages that change what the window shows, each before (in
   its tempo node, and the reading stays where the pedal has it. Before, the
   tempo was dropped without a word, so its `before/` is the editor as it was
   left (`pro-edit`); a tempo the pedal took was shown before it answered.
+
+## StompStation PRO routing on firmware 2.x
+
+The board draws a 2.x pedal's chain from its router
+(`docs/_reference/stompstation-router.md`) and edits it, in `router/`, for an
+invented pedal at 2.0.10: the default chain (`pro-router`), the delay and
+the reverb in parallel (`pro-router-parallel`), a chorus, a switched-off
+flanger and the modulation in parallel after free positions
+(`pro-router-three-way`), and a free position chosen with the block picker
+open (`pro-router-picker`). `router/before/` is the editor as it was: it
+ignored the router and drew all nineteen blocks the schema lists in its
+order, so every chain looked the same, and only the default chain's set is
+kept.
+
+The pedal's fourteen positions sit between the jacks: blocks as tiles in
+their category's colour, the amp, delay and reverb with a lock, free
+positions as dashed slots whose "+" opens the picker. Positions joined in
+parallel stack as lanes between a split and a sum, as an HX branch does. A
+click selects a block for the pane, whose head says where it is ("position
+9 · parallel with Flanger and Mod", or a lock chip, "Fixed in position 7")
+and offers Replace and Remove. Dragging a block onto another position swaps
+them; the tile's menu replaces it, runs it in series or parallel with either
+neighbour, or removes it. Each edit is one write, undoable, an unsaved
+change until saved, and the board shows the chain the pedal reads back.
+
+- The mockup draws sixteen slots with four fixed (Gate too); the pedal has
+  fourteen positions and fixes three. Its header says "12 of 14 positions ·
+  3 fixed".
+- No mono and stereo legend, and one line for every wire: the router says
+  every position is stereo but not where a mono input becomes two, so the
+  board claims nothing about it. The jacks do not say "1 + 2".
+- No F1 to F4 or CTRL tags, floor, Quick controls or Controllers: on 2.x
+  the quick controls are global settings that name positions, which TonePush
+  does not read yet.
+- A connector is chosen on the wire between two positions, or between two
+  lanes: a fork or an arrow appears under the pointer, as the board's "+"
+  does. The tile's menu offers the same.
+- On 2.0.10 an empty branch of a bank passes nothing, so its wires are drawn
+  dashed; on 2.2.6 it passes the dry signal, and there removing a branch
+  offers to run the rest of the bank in series. Both come from reading the
+  firmware, not from listening.
+- The picker is the model browser's rail and cards: every block the chain
+  can hold and does not, by category, with its controls drawn where the
+  pedal has them. There is no search; a pedal has about twenty blocks.
+- The header's menu loads the default chain or clears it, written as the
+  chain itself rather than through the pedal's own Clear Chain and Load
+  Default Chain actions, so they undo like any edit.
+- At 1024 × 640 beside the sidebar the chain scrolls, as 1.5.12's does, and
+  the chosen block or position is brought into view.

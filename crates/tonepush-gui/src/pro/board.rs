@@ -1,12 +1,14 @@
 //! The StompStation PRO's chain on the board (docs/design/redesign-2026-10-01,
-//! screen 09): the pedal's blocks in the order its schema lists them, drawn
-//! as the same tiles as an HX's, between its input and output jacks.
+//! screen 09): the pedal's blocks drawn as the same tiles as an HX's, between
+//! its input and output jacks.
 //!
-//! Firmware 1.5.12 has one chain of twelve blocks, each always in its place,
-//! so the board draws no free positions and no locks: every block can be
-//! turned off, none can be moved. The chain is read from the schema rather
-//! than written down here, so a firmware that lists other blocks gets them as
-//! ordinary tiles, named from the schema.
+//! Firmware 2.x describes its chain in a router, which `routing` draws and
+//! edits. Firmware 1.5.12 has none: one chain of twelve blocks, each always
+//! in its place, which this module draws in the order the schema lists them,
+//! with no free positions and no locks: every block can be turned off, none
+//! can be moved. That chain is read from the schema rather than written down
+//! here, so a firmware that lists other blocks gets them as ordinary tiles,
+//! named from the schema.
 
 use egui::{Pos2, Rect, Sense, Ui, Vec2};
 
@@ -44,13 +46,28 @@ pub(crate) fn chain_tiles(snapshot: &Snapshot) -> Vec<ProTile> {
 /// A block's name as short as the pedal's own screen keeps it.
 pub(crate) fn tile_name(group: &str) -> String {
     match group {
-        "gate" => "Gate".to_owned(),
-        "exp" => "Wah".to_owned(),
-        "comp" => "Comp".to_owned(),
-        "mod" => "Mod".to_owned(),
-        "ir" => "IR".to_owned(),
-        _ => friendly_group(group),
+        "gate" => "Gate",
+        "exp" => "Wah",
+        "comp" => "Comp",
+        "mod" => "Mod",
+        "ir" => "IR",
+        // Firmware 2.x's blocks: the second of a kind is numbered, as the
+        // pedal lists two delays, two reverbs and two EQs.
+        "flanger" => "Flanger",
+        "chorus" => "Chorus",
+        "eq2" => "EQ 2",
+        "crossover" => "Crossover",
+        "delay2" => "Delay 2",
+        "reverb2" => "Reverb 2",
+        "pickup" => "Pickup Sim",
+        "pitch_time" => "Pitch Time",
+        "dyna_comp" => "Dynamic Comp",
+        "parametric_eq" => "Parametric EQ",
+        "dtchr" => "Detune Chorus",
+        "rotary" => "Rotary",
+        _ => return friendly_group(group),
     }
+    .to_owned()
 }
 
 /// What a tile says under its name when its block has no model or mode.
@@ -111,14 +128,38 @@ pub(crate) fn lay_out(count: usize, left: f32, top: f32, width: f32, g: &Geometr
     }
 }
 
+/// How tall the board is for a snapshot's chain: one row of tiles, or as
+/// many lanes as a 2.x chain's deepest parallel bank stacks.
+pub(crate) fn board_height(snapshot: &Snapshot, tier: Tier) -> f32 {
+    match routing::Chain::of(snapshot) {
+        Some(chain) => {
+            let lanes = chain
+                .router()
+                .stages()
+                .iter()
+                .map(|stage| stage.len())
+                .max()
+                .unwrap_or(1);
+            routing::board_height(&routing::geometry(tier).0, lanes)
+        }
+        None => {
+            let g = Geometry::pro(tier);
+            g.top + g.tile_height + g.bottom
+        }
+    }
+}
+
 impl Panel {
     /// The board under the deck: the chain on its dotted surface, a click
     /// on a tile or a jack choosing what the pane shows.
     pub(super) fn board(&mut self, root: &mut Ui, snapshot: &Snapshot, tier: Tier) {
         let g = Geometry::pro(tier);
+        // A bank deep enough to crowd the pane out scrolls instead.
+        let room = (root.available_height() * 0.6).max(g.top + g.tile_height + g.bottom);
+        let height = board_height(snapshot, tier).min(room);
         let mut notch = None;
         let panel = egui::Panel::top("pro-board")
-            .exact_size(g.top + g.tile_height + g.bottom)
+            .exact_size(height)
             .resizable(false)
             .show_separator_line(false)
             .frame(egui::Frame::new().fill(theme::bg_deep()))
@@ -129,8 +170,8 @@ impl Panel {
     }
 
     /// The chain drawn into `ui`: with `live`, its tiles and jacks choose
-    /// what the pane shows. Returns where the notch under the chosen one
-    /// goes.
+    /// what the pane shows, and a 2.x chain's positions can be edited.
+    /// Returns where the notch under the chosen one goes.
     pub(super) fn draw_board(
         &mut self,
         ui: &mut Ui,
@@ -139,6 +180,9 @@ impl Panel {
         tier: Tier,
         live: bool,
     ) -> Option<f32> {
+        if let Some(chain) = routing::Chain::of(snapshot) {
+            return self.draw_route(ui, snapshot, &chain, tier, live);
+        }
         let rect = ui.max_rect();
         theme::paint::dots(ui.painter(), rect, theme::dot());
         let tiles = chain_tiles(snapshot);
@@ -353,5 +397,30 @@ mod tests {
         assert_eq!(tile_name("mod_pre"), "Pre Mod");
         assert_eq!(tile_name("amp"), "Amp");
         assert_eq!(tile_name("chorus2"), "Chorus2");
+        // Firmware 2.x's own blocks, the second of a kind numbered.
+        assert_eq!(tile_name("delay2"), "Delay 2");
+        assert_eq!(tile_name("eq2"), "EQ 2");
+        assert_eq!(tile_name("dtchr"), "Detune Chorus");
+        assert_eq!(tile_name("pickup"), "Pickup Sim");
+    }
+
+    /// The board is as tall as a 2.x chain's deepest bank, and 1.5.12's one
+    /// row as it was.
+    #[test]
+    fn the_board_is_as_tall_as_the_chain_it_draws() {
+        use super::super::demo::{snapshot_2x, DemoChain};
+        let g = Geometry::pro(Tier::M);
+        let row = g.top + g.tile_height + g.bottom;
+        let mut panel = Panel::new(egui::Context::default());
+        panel.show_demo();
+        assert_eq!(board_height(panel.snapshot.as_ref().unwrap(), Tier::M), row);
+        assert_eq!(
+            board_height(&snapshot_2x(&DemoChain::Default), Tier::M),
+            row
+        );
+        assert_eq!(
+            board_height(&snapshot_2x(&DemoChain::ThreeWay), Tier::M),
+            row + 2.0 * g.lane_pitch()
+        );
     }
 }

@@ -277,11 +277,11 @@ impl Panel {
     }
 
     /// The colour and category of what the pane shows.
-    fn pane_category(group: &str) -> &'static str {
+    fn pane_category(snapshot: &Snapshot, group: &str) -> &'static str {
         match group {
             INPUT_GROUP => "Input",
             "output" => "Output",
-            group => group_category(group),
+            group => super::routing::block_category(snapshot, group),
         }
     }
 
@@ -312,7 +312,15 @@ impl Panel {
             }
             _ => {}
         }
-        let mut parts = vec![(group_category(group).to_owned(), true)];
+        let category = Self::pane_category(snapshot, group);
+        let mut parts = vec![(
+            if category.is_empty() {
+                "Block".to_owned()
+            } else {
+                category.to_owned()
+            },
+            true,
+        )];
         for model in &face.models {
             let slot = model
                 .choices
@@ -333,6 +341,31 @@ impl Panel {
         if face.switch.as_ref().is_some_and(|switch| !switch.on) {
             parts.push(("off".to_owned(), false));
         }
+        // Firmware 2.x: where it is in the chain, unless it is fixed there,
+        // which the head's lock says, and what it runs in parallel with.
+        if let Some(chain) = super::routing::Chain::of(snapshot) {
+            match chain.position_of(group) {
+                Some(position) => {
+                    if !chain.fixed().position(position) {
+                        parts.push((format!("position {}", position + 1), false));
+                    }
+                    let bank = chain.router().bank(position);
+                    let others: Vec<String> = bank
+                        .filter(|other| *other != position)
+                        .map(|other| chain.label(other))
+                        .collect();
+                    if let [rest @ .., last] = others.as_slice() {
+                        let with = if rest.is_empty() {
+                            last.clone()
+                        } else {
+                            format!("{} and {last}", rest.join(", "))
+                        };
+                        parts.push((format!("parallel with {with}"), false));
+                    }
+                }
+                None => parts.push(("not in the chain".to_owned(), false)),
+            }
+        }
         parts
     }
 
@@ -349,6 +382,17 @@ impl Panel {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::bg()))
             .show(root, |ui| {
+                // Firmware 2.x: the block picker takes the pane while it is
+                // open on a position.
+                if self.picking.is_some() {
+                    match super::routing::Chain::of(snapshot) {
+                        Some(chain) => {
+                            self.picker(ui, snapshot, &chain, tier);
+                            return;
+                        }
+                        None => self.picking = None,
+                    }
+                }
                 let pane = ui.max_rect();
                 let group = self.selected_group.clone();
                 let large = tier == Tier::L;
@@ -401,8 +445,8 @@ impl Panel {
     pub(super) fn preview_pane(&mut self, ui: &mut Ui, snapshot: &Snapshot, tier: Tier) {
         let group = self.selected_group.clone();
         let face = self.face_of(snapshot, &group, false);
-        let colour = theme::category_colour(Self::pane_category(&group));
-        self.block_head(ui, snapshot, &group, &face, colour);
+        let colour = theme::category_colour(Self::pane_category(snapshot, &group));
+        self.block_head(ui, snapshot, &group, &face, colour, false);
         ui.add_enabled_ui(false, |ui| {
             ui.horizontal_top(|ui| {
                 ui.add_space(20.0);
@@ -422,9 +466,9 @@ impl Panel {
         height: f32,
     ) {
         let face = self.face_of(snapshot, group, true);
-        let category = Self::pane_category(group);
+        let category = Self::pane_category(snapshot, group);
         let colour = theme::category_colour(category);
-        self.block_head(ui, snapshot, group, &face, colour);
+        self.block_head(ui, snapshot, group, &face, colour, true);
         let persistent = group == INPUT_GROUP;
         let guarded = !persistent || self.rollback.is_some();
         if persistent && !guarded {
@@ -478,7 +522,8 @@ impl Panel {
     }
 
     /// The chosen block's head: its drawing in a well, its name, and what it
-    /// is.
+    /// is. On firmware 2.x, a fixed block's lock, and with `live` a movable
+    /// one's Replace and Remove.
     fn block_head(
         &mut self,
         ui: &mut Ui,
@@ -486,6 +531,7 @@ impl Panel {
         group: &str,
         face: &Face,
         colour: Color32,
+        live: bool,
     ) {
         let width = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 64.0), Sense::hover());
@@ -510,7 +556,12 @@ impl Panel {
             Stroke::new(1.0, theme::alpha(colour, 0.4)),
             egui::StrokeKind::Inside,
         );
-        if let Some(art) = theme::category_icon(Self::pane_category(group)) {
+        let drawing = match group {
+            INPUT_GROUP => theme::category_icon("Input"),
+            "output" => theme::category_icon("Output"),
+            group => super::routing::block_drawing(Self::pane_category(snapshot, group)),
+        };
+        if let Some(art) = drawing {
             art.paint(
                 ui,
                 Rect::from_center_size(well.center(), Vec2::splat(22.0)),
@@ -525,7 +576,31 @@ impl Panel {
             theme::text(),
             (inner.right() - x).max(120.0),
         );
+        let heading_right = x + heading.size().x;
         shell::paint_line(ui, heading, x, y - 9.0);
+        // Firmware 2.x: where the block sits in the chain.
+        let chain = super::routing::Chain::of(snapshot);
+        let placed = chain
+            .as_ref()
+            .and_then(|chain| Some((chain, chain.position_of(group)?)));
+        if let Some((chain, position)) = placed {
+            if chain.fixed().position(position) {
+                let text = format!("Fixed in position {}", position + 1);
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_max(
+                            Pos2::new(heading_right + 10.0, y - 19.0),
+                            Pos2::new(inner.right(), y + 1.0),
+                        ))
+                        .id_salt("pro-head-fixed")
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                theme::Chip::new(&text)
+                    .icon(Icon::Lock)
+                    .show(&mut child)
+                    .on_hover_text("The pedal keeps this block in this position");
+            }
+        }
         let mut meta_x = x;
         for (index, (part, strong)) in Self::pane_meta(snapshot, group, face)
             .into_iter()
@@ -549,6 +624,74 @@ impl Panel {
             let w = galley.size().x;
             shell::paint_line(ui, galley, meta_x, y + 11.0);
             meta_x += w + 6.0;
+        }
+
+        // Firmware 2.x: what can be done with a block that can move, as its
+        // tile's menu offers it.
+        let Some((chain, position)) =
+            placed.filter(|(chain, position)| live && !chain.fixed().position(*position))
+        else {
+            return;
+        };
+        let left = heading_right.max(meta_x - 6.0) + 20.0;
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    Pos2::new(left, inner.top()),
+                    Pos2::new(inner.right().max(left), inner.bottom()),
+                ))
+                .id_salt("pro-head-route")
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        child.spacing_mut().item_spacing.x = 12.0;
+        let ready = self.can_route();
+        if theme::Button::new("Replace")
+            .small()
+            .icon(Icon::LayoutGrid)
+            .enabled(ready)
+            .show(&mut child)
+            .on_hover_text("Choose another block for this position")
+            .clicked()
+        {
+            self.typing = None;
+            self.picking = Some(super::routing::Picking {
+                position,
+                replacing: Some(group.to_owned()),
+                category: None,
+            });
+        }
+        let fixed = chain.fixed();
+        let banked = chain.dry_branches && chain.router().bank(position).len() > 1;
+        let remove = theme::IconButton::new(Icon::Remove)
+            .enabled(ready)
+            .show(&mut child)
+            .on_hover_text(format!(
+                "Take it out of the chain. {}",
+                super::routing::REMOVED
+            ));
+        if !banked {
+            if remove.clicked() {
+                self.route(chain, chain.router().remove(fixed, position), None);
+            }
+            return;
+        }
+        // Where an empty branch passes the dry signal, taking a branch out
+        // can also run the rest of its bank in series.
+        let mut asked = None;
+        egui::Popup::menu(&remove).gap(4.0).show(|ui| {
+            theme::menu_width(ui, 270.0);
+            if theme::menu_danger(ui, Icon::Remove, "Remove from the chain").clicked() {
+                asked = Some(chain.router().remove(fixed, position));
+            }
+            if theme::menu_danger(ui, Icon::Remove, "Remove, and run the rest in series")
+                .on_hover_text(super::routing::DRY_BRANCH)
+                .clicked()
+            {
+                asked = Some(chain.router().remove_in_series(fixed, position));
+            }
+        });
+        if let Some(next) = asked {
+            self.route(chain, next, None);
         }
     }
 
@@ -1331,6 +1474,27 @@ mod tests {
             "type": "float", "desc": "Time", "value": min, "min": min, "max": max, "step": step,
         }))
         .unwrap()
+    }
+
+    /// On 2.x a block's head says where it is in the chain and what it runs
+    /// in parallel with; a fixed one leaves its position to its lock.
+    #[test]
+    fn a_blocks_head_says_where_it_is_in_the_chain() {
+        use super::super::demo::{snapshot_2x, DemoChain};
+        let snapshot = snapshot_2x(&DemoChain::ThreeWay);
+        let words = |group: &str| -> Vec<String> {
+            Panel::pane_meta(&snapshot, group, &Face::default())
+                .into_iter()
+                .map(|(part, _)| part)
+                .collect()
+        };
+        assert_eq!(
+            words("chorus"),
+            ["Modulation", "position 9", "parallel with Flanger and Mod"]
+        );
+        assert_eq!(words("delay"), ["Delay"], "fixed, and in series");
+        assert_eq!(words("eq"), ["EQ", "not in the chain"]);
+        assert_eq!(Panel::pane_category(&snapshot, "flanger"), "Modulation");
     }
 
     /// A reading is typed the way it is shown, unit and all, and lands in

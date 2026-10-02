@@ -732,11 +732,38 @@ impl Panel {
         show_sidebar
     }
 
-    /// The loaded PRO preset's chain as category colours.
-    fn mini_chain(&self) -> Vec<Mini> {
+    /// The loaded PRO preset's chain as category colours: on 2.x the
+    /// blocks its router holds, a parallel bank stacked.
+    pub(super) fn mini_chain(&self) -> Vec<Mini> {
         let Some(snapshot) = &self.snapshot else {
             return Vec::new();
         };
+        if let Some(chain) = super::routing::Chain::of(snapshot) {
+            return chain
+                .router()
+                .stages()
+                .into_iter()
+                .filter_map(|stage| {
+                    let lanes: Vec<(egui::Color32, bool)> = stage
+                        .filter_map(|position| chain.held(position))
+                        .map(|block| {
+                            (
+                                theme::category_colour(block.category),
+                                block_enabled(snapshot, &block.group),
+                            )
+                        })
+                        .collect();
+                    match lanes.as_slice() {
+                        [] => None,
+                        [(colour, on)] => Some(Mini::Block {
+                            colour: *colour,
+                            on: *on,
+                        }),
+                        _ => Some(Mini::Stack(lanes)),
+                    }
+                })
+                .collect();
+        }
         app_groups(snapshot)
             .iter()
             .map(|group| Mini::Block {
