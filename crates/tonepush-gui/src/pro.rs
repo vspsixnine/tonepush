@@ -734,6 +734,11 @@ impl Panel {
         self.dirty
     }
 
+    /// How many steps undo can take back.
+    pub(crate) fn undo_depth(&self) -> usize {
+        self.undo_depth
+    }
+
     /// The slot the pedal has loaded, when it says.
     pub(crate) fn loaded_slot(&self) -> Option<usize> {
         self.snapshot.as_ref().and_then(active_preset_index)
@@ -1771,7 +1776,12 @@ struct Worker {
     device: Option<Device<SerialLink>>,
     rollback: Option<ArmedRollback>,
     rollback_path: Option<PathBuf>,
+    /// Every value an audition replaced, the tone's own and those an edit
+    /// made while it played: what Put back writes back.
     audition_original: Vec<(NodePath, NodeDescription, Value)>,
+    /// The undo history set aside while a tone is auditioned, with the
+    /// audition's own key; the audition keeps a history of its own.
+    audition: Option<SetAside>,
     history: Vec<Vec<NodeEdit>>,
     future: Vec<Vec<NodeEdit>>,
     last_edit_at: Option<Instant>,
@@ -1787,6 +1797,12 @@ struct Worker {
     last_seen: Option<firmware::Seen>,
     /// A device in the pedal's place that said it is something else.
     refused_port: Option<String>,
+}
+
+/// What an audition set aside of the loaded preset besides its values.
+struct SetAside {
+    history: Vec<Vec<NodeEdit>>,
+    future: Vec<Vec<NodeEdit>>,
 }
 
 #[derive(Clone)]
@@ -1807,6 +1823,7 @@ impl Worker {
             rollback: None,
             rollback_path: None,
             audition_original: Vec::new(),
+            audition: None,
             history: Vec::new(),
             future: Vec::new(),
             last_edit_at: None,
@@ -1867,6 +1884,7 @@ impl Worker {
                     // session; writing them into the next one would overwrite
                     // whatever that pedal has loaded.
                     self.audition_original.clear();
+                    self.audition = None;
                     self.send(Evt::Disconnected);
                 }
             }
@@ -1941,6 +1959,7 @@ impl Worker {
                 if !self.update_mode {
                     self.restore_audition()?;
                 }
+                self.audition = None;
                 self.device = None;
                 self.update_mode = false;
                 self.awaiting = None;
@@ -1954,6 +1973,7 @@ impl Worker {
             Cmd::Redo => self.step_history(false),
             Cmd::SelectPreset(index) => {
                 self.restore_audition()?;
+                self.audition = None;
                 self.send(Evt::Auditioning(None));
                 let device = self.device()?;
                 device.select_preset(index)?;
@@ -2011,6 +2031,9 @@ impl Worker {
                 if persistent {
                     self.require_guard()?;
                 }
+                if !persistent {
+                    self.remember_original(&path, &description, &before);
+                }
                 let device = self.device()?;
                 if let Err(error) = device.write_node(path.clone(), &description, value.clone()) {
                     self.send(Evt::NodeValue {
@@ -2049,6 +2072,9 @@ impl Worker {
                     }
                 };
                 self.send(Evt::Routed(Some(after.to_value())));
+                if let Ok(router) = NodePath::new(voidx_proto::router::PATH) {
+                    self.remember_original(&router, &description, &before.to_value());
+                }
                 if after == before {
                     self.send(Evt::Failed("The pedal kept the chain as it was".into()));
                     return Ok(());
@@ -2087,6 +2113,13 @@ impl Worker {
             }
             Cmd::SavePreset(name) => {
                 self.require_guard()?;
+                // Saving keeps the preset's own changes, never a tone being
+                // auditioned in its place.
+                if self.audition.is_some() {
+                    self.restore_audition()?;
+                    self.take_back_history();
+                    self.send(Evt::Auditioning(None));
+                }
                 self.device()?.save_preset(&name)?;
                 self.refresh(true)?;
                 self.send(Evt::ForgetPresetHashes);
@@ -2235,6 +2268,7 @@ impl Worker {
                     self.send(Evt::AuditionFailed(key));
                     // What played before was put back on the way.
                     if self.audition_original.is_empty() {
+                        self.take_back_history();
                         self.send(Evt::Auditioning(None));
                     }
                 }
@@ -2242,6 +2276,7 @@ impl Worker {
             }
             Cmd::EndAudition => {
                 self.restore_audition()?;
+                self.take_back_history();
                 self.refresh(false)?;
                 self.send(Evt::Auditioning(None));
                 self.send(Evt::Success("Restored the previous edit buffer".into()));
@@ -2261,6 +2296,9 @@ impl Worker {
                         });
                     }
                 }
+                // What is heard, edits included, is one step over the
+                // history the preset had.
+                self.take_back_history();
                 self.record_transaction(edits);
                 self.send(Evt::Auditioning(None));
                 self.send(Evt::Success("Kept the audition in the edit buffer".into()));
@@ -2395,6 +2433,7 @@ impl Worker {
             }
         };
         self.audition_original.clear();
+        self.audition = None;
         let snapshot = snapshot(&mut device)?;
         let can_refresh_backup = latest_verified_backup(&snapshot.identity).is_some();
         let version = snapshot.identity.version.clone();
@@ -2695,6 +2734,15 @@ impl Worker {
     /// before it, and remember what each value replaced.
     fn audition(&mut self, key: i64, name: &str, bytes: &[u8]) -> WorkResult<()> {
         self.restore_audition()?;
+        if self.audition.is_none() {
+            self.set_history_aside();
+        } else {
+            // Another tone: the edits made to the one before went with it.
+            self.history.clear();
+            self.future.clear();
+            self.last_edit_at = None;
+            self.report_history();
+        }
         let preset = Preset::parse(bytes)?;
         let tree = self.device()?.browse(NodePath::new("root\\app")?)?;
         let mut changes = Vec::new();
@@ -2737,6 +2785,47 @@ impl Worker {
         self.send(Evt::Auditioning(Some(key)));
         self.send(Evt::Success(format!("Auditioning {name}")));
         Ok(())
+    }
+
+    /// Set the loaded preset's undo history aside as an audition begins:
+    /// the audition keeps a history of its own.
+    fn set_history_aside(&mut self) {
+        self.audition = Some(SetAside {
+            history: std::mem::take(&mut self.history),
+            future: std::mem::take(&mut self.future),
+        });
+        self.last_edit_at = None;
+        self.report_history();
+    }
+
+    /// The history set aside comes back as the audition ends.
+    fn take_back_history(&mut self) {
+        if let Some(set_aside) = self.audition.take() {
+            self.history = set_aside.history;
+            self.future = set_aside.future;
+            self.last_edit_at = None;
+            self.report_history();
+        }
+    }
+
+    /// While a tone is auditioned, the value an edit replaces is what Put
+    /// back writes back, unless the audition already holds one for it.
+    fn remember_original(
+        &mut self,
+        path: &NodePath,
+        description: &NodeDescription,
+        before: &Value,
+    ) {
+        if self.audition.is_none()
+            || self
+                .audition_original
+                .iter()
+                .any(|(held, _, _)| held == path)
+        {
+            return;
+        }
+        self.audition_original
+            .push((path.clone(), description.clone(), before.clone()));
     }
 
     fn restore_audition(&mut self) -> WorkResult<()> {
@@ -4690,6 +4779,58 @@ root\\app\\ir\\on_off:{\"value\":\"OFF\"}\r\n";
         };
         assert_eq!(before, Value::from(0.0));
         assert_eq!(value, Value::from(3.0));
+    }
+
+    /// While a tone is auditioned, an edit to a value the tone did not set
+    /// is remembered as it was, once, so Put back restores it too; outside
+    /// an audition nothing is remembered.
+    #[test]
+    fn an_edit_during_an_audition_is_put_back_with_it() {
+        let (_commands, receiver) = mpsc::channel();
+        let (events, _events) = mpsc::channel();
+        let mut worker = Worker::new(receiver, events, egui::Context::default());
+        let gain = NodePath::new("root\\app\\amp\\gain").unwrap();
+        let mix = NodePath::new("root\\app\\delay\\mix").unwrap();
+        let description: NodeDescription = serde_json::from_value(serde_json::json!({
+            "type": "float", "value": 0.0, "min": 0.0, "max": 100.0
+        }))
+        .unwrap();
+
+        worker.remember_original(&gain, &description, &Value::from(5.0));
+        assert!(
+            worker.audition_original.is_empty(),
+            "no audition, nothing kept"
+        );
+
+        worker.history.push(Vec::new());
+        worker.set_history_aside();
+        assert!(
+            worker.history.is_empty(),
+            "the audition starts its own history"
+        );
+        worker
+            .audition_original
+            .push((mix.clone(), description.clone(), Value::from(20.0)));
+        worker.remember_original(&gain, &description, &Value::from(5.0));
+        worker.remember_original(&gain, &description, &Value::from(7.0));
+        worker.remember_original(&mix, &description, &Value::from(33.0));
+        let kept: Vec<(String, Value)> = worker
+            .audition_original
+            .iter()
+            .map(|(path, _, value)| (path.to_string(), value.clone()))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                (mix.to_string(), Value::from(20.0)),
+                (gain.to_string(), Value::from(5.0)),
+            ],
+            "the first value each held, the tone's own kept"
+        );
+
+        worker.take_back_history();
+        assert_eq!(worker.history.len(), 1, "the preset's history is back");
+        assert!(worker.audition.is_none());
     }
 
     /// Stepping through tones queues an audition per row; only the one

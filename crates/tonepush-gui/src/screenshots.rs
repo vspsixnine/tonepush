@@ -116,10 +116,12 @@ enum Scene {
     HxCannotPlay,
     /// Glass Wall auditioned on the StompStation PRO over 03B Velvet Drive.
     ProAudition,
+    /// Dream Pop auditioned, two knobs turned since: the edits stay with it.
+    HxAuditionEdited,
 }
 
 impl Scene {
-    const ALL: [Scene; 39] = [
+    const ALL: [Scene; 40] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -159,6 +161,7 @@ impl Scene {
         Scene::HxAuditionKeep,
         Scene::HxCannotPlay,
         Scene::ProAudition,
+        Scene::HxAuditionEdited,
     ];
 
     fn name(self) -> &'static str {
@@ -202,6 +205,7 @@ impl Scene {
             Scene::HxAuditionKeep => "hx-audition-keep",
             Scene::HxCannotPlay => "hx-cannot-play",
             Scene::ProAudition => "pro-audition",
+            Scene::HxAuditionEdited => "hx-audition-edited",
         }
     }
 
@@ -259,12 +263,17 @@ impl Scene {
                 backups_history(app);
                 app.page = shell::Page::Pedal;
             }
-            Scene::HxAudition | Scene::HxAuditionKeep => {
+            Scene::HxAudition | Scene::HxAuditionKeep | Scene::HxAuditionEdited => {
                 hx_stomp(app);
                 // Every pedal's tones, as the sheet draws them.
                 app.library_device_filter = None;
                 auditioning(app, "Dream Pop");
                 dream_pop_chain(app);
+                if self == Scene::HxAuditionEdited {
+                    // Two knobs turned on the tone while it plays.
+                    app.undo_depth = 2;
+                    app.dirty = true;
+                }
             }
             Scene::HxCannotPlay => {
                 hx_stomp(app);

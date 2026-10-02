@@ -37,6 +37,8 @@ A click on a tone in your library plays it on the pedal, in the place of the pre
 - **Put back** (Esc) writes the preset back exactly as it was, changes and all.
 - **Keep in 01B** (Enter, named after the loaded slot) makes what plays that slot's edit: Save then writes it over the preset, and Undo still brings the preset back. Its menu also offers **In another slot…** (Ctrl Enter): choose a slot on the left, and it is written once the preset set aside is back.
 
+Turn its knobs while it plays and the changes stay with it, and the bar counts them: Keep keeps them, Put back drops them and restores the preset exactly as it was set aside, and stepping to another tone leaves them behind. Undo and redo work on those changes alone while it plays.
+
 While a tone plays, Save is off and Ctrl S points at the bar instead; the deck, the chain and the preset's row in the sidebar say what is auditioned. Switching between the library's tabs leaves it playing. Clicking another preset puts it back first, then asks about its changes as any switch does, and clicking the loaded preset's own row puts it back. A tone the pedal cannot play says why where the bar would be, and offers to show only what the pedal plays. A StompStation PRO auditions the same way, and so does a tone from TonePush.
 
 ### 3. Build a setlist

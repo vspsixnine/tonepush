@@ -701,20 +701,11 @@ impl Worker {
         {
             self.keep_try();
         }
-        // Any ordinary device action means the person has moved on from the
-        // cloud browser. Restore first, then perform the requested action on
-        // the real preset. ReadSwitches is the one automatic follow-up to a
-        // presented document and must not end an audition by itself.
-        if self.audition.is_some()
-            && !matches!(
-                &cmd,
-                Cmd::AuditionDocument { .. }
-                    | Cmd::AuditionSteps { .. }
-                    | Cmd::EndAudition
-                    | Cmd::KeepAudition
-                    | Cmd::ReadSwitches
-            )
-        {
+        // What leaves the loaded preset, or writes the pedal's memory, puts
+        // an audition back first and then runs on the real preset. An edit
+        // made while a tone plays stays in the audition: Put back still
+        // restores what was set aside exactly, and Keep keeps what is heard.
+        if self.audition.is_some() && ends_audition(&cmd) {
             self.end_audition();
         }
         match cmd {
@@ -1636,10 +1627,14 @@ impl Worker {
             self.send(Evt::Failed(format!("{name} is not a readable preset")));
             return self.send(Evt::AuditionFailed(key));
         };
+        let stepping = self.audition.is_some();
         if !self.begin_audition() {
             return self.send(Evt::AuditionFailed(key));
         }
         if self.run_on_device(|device| device.write_preset(&preset)) {
+            if stepping {
+                self.drop_audition_edits();
+            }
             self.dirty = false;
             if let Some(audition) = self.audition.as_mut() {
                 audition.key = key;
@@ -1654,6 +1649,7 @@ impl Worker {
     }
 
     fn audition_steps(&mut self, key: i64, name: &str, blocks: &[ApplyBlock]) {
+        let stepping = self.audition.is_some();
         if !self.begin_audition() {
             return self.send(Evt::AuditionFailed(key));
         }
@@ -1668,6 +1664,9 @@ impl Worker {
             self.end_audition();
             return;
         };
+        if stepping {
+            self.drop_audition_edits();
+        }
         self.dirty = false;
         if let Some(audition) = self.audition.as_mut() {
             audition.key = key;
@@ -1675,6 +1674,15 @@ impl Worker {
         self.present(&preset);
         self.send(Evt::Auditioning(Some(key)));
         self.send(Evt::Activity(format!("auditioning {name}")));
+    }
+
+    /// Another tone took the audition's place: the edits made to the one
+    /// before, and their undo steps, went with it.
+    fn drop_audition_edits(&mut self) {
+        self.history.clear();
+        self.future.clear();
+        self.snapshot_taken = false;
+        self.report_history();
     }
 
     /// Restore the captured document byte-for-byte and reinstate the undo
@@ -2502,6 +2510,33 @@ fn shape_setting_value(
         Value::F64(_) => Value::F64(f64::from(value)),
         _ => return None,
     })
+}
+
+/// Whether a command leaves the loaded preset or writes the pedal's memory,
+/// so an audition is put back before it runs. Everything else (an edit, a
+/// snapshot, an undo, a look at the pedal's libraries) happens to the tone
+/// being auditioned and stays with it.
+fn ends_audition(cmd: &Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::Connect
+            | Cmd::Disconnect
+            | Cmd::Quit
+            | Cmd::BackUp(_)
+            | Cmd::RestoreAll(_)
+            | Cmd::Rename { .. }
+            | Cmd::SelectPreset(_)
+            | Cmd::Switch { .. }
+            | Cmd::SelectSetlist(_)
+            | Cmd::LoadDocument { .. }
+            | Cmd::LoadSteps { .. }
+            | Cmd::SavePreset
+            | Cmd::PastePreset(_)
+            | Cmd::ClearPreset(_)
+            | Cmd::CaptureSetlist
+            | Cmd::PushSetlist(_)
+            | Cmd::WriteSetlist { .. }
+    )
 }
 
 #[cfg(test)]
@@ -3708,6 +3743,118 @@ mod tests {
         assert!(said.iter().any(|e| matches!(e, Evt::AuditionFailed(9))));
         assert!(worker.audition.is_none());
         assert!(!pedal.lock().unwrap().opcodes().contains(&op::WRITE_PRESET));
+    }
+
+    /// The tempo of what the pretend pedal has in its edit buffer now.
+    fn buffer_tempo(pedal: &Arc<Mutex<Pedal>>) -> Option<f32> {
+        hx_proto::Preset::parse(&pedal.lock().unwrap().buffer).and_then(|preset| preset.tempo())
+    }
+
+    /// An edit made while a tone is auditioned stays in the audition, and
+    /// Put back still restores the preset set aside exactly, with the undo
+    /// history it had.
+    #[test]
+    fn an_edit_during_an_audition_stays_in_it_until_put_back() {
+        let pedal = Pedal::new();
+        let (mut worker, events) = worker(&pedal);
+        worker.handle(Cmd::SetTempo(100.0));
+        let before = worker.history.len();
+        worker.handle(Cmd::AuditionDocument {
+            key: 7,
+            name: "Dream Pop".into(),
+            bytes: document(150.0),
+        });
+        let _ = events.try_iter().count();
+
+        worker.handle(Cmd::SetTempo(130.0));
+        assert!(
+            worker.audition.is_some(),
+            "the edit did not end the audition"
+        );
+        assert_eq!(buffer_tempo(&pedal), Some(130.0));
+        assert_eq!(worker.history.len(), 1, "the audition has its own history");
+        assert!(!events
+            .try_iter()
+            .any(|e| matches!(e, Evt::Auditioning(None))));
+
+        worker.handle(Cmd::EndAudition);
+        assert!(worker.audition.is_none());
+        assert_eq!(
+            buffer_tempo(&pedal),
+            Some(100.0),
+            "back as it was set aside"
+        );
+        assert_eq!(worker.history.len(), before, "with its own history");
+        assert!(worker.dirty, "and its changes");
+    }
+
+    /// Keep keeps what is heard, the edit included; the preset set aside is
+    /// one undo step under it.
+    #[test]
+    fn keep_keeps_the_edits_made_during_an_audition() {
+        let pedal = Pedal::new();
+        let (mut worker, _events) = worker(&pedal);
+        worker.handle(Cmd::AuditionDocument {
+            key: 7,
+            name: "Dream Pop".into(),
+            bytes: document(150.0),
+        });
+        worker.handle(Cmd::SetTempo(130.0));
+        worker.handle(Cmd::KeepAudition);
+
+        assert!(worker.audition.is_none());
+        assert_eq!(buffer_tempo(&pedal), Some(130.0));
+        assert!(worker.dirty);
+        let undone = worker.history.last().cloned().expect("one step to undo");
+        assert_eq!(
+            hx_proto::Preset::parse(&undone).and_then(|preset| preset.tempo()),
+            Some(120.0),
+            "undo brings back the preset that was set aside"
+        );
+    }
+
+    /// Stepping to another tone drops the edits made to the one before, and
+    /// their undo steps; what was set aside stays the baseline.
+    #[test]
+    fn stepping_to_another_tone_drops_the_edits_to_the_last() {
+        let pedal = Pedal::new();
+        let (mut worker, _events) = worker(&pedal);
+        worker.handle(Cmd::AuditionDocument {
+            key: 7,
+            name: "Dream Pop".into(),
+            bytes: document(150.0),
+        });
+        worker.handle(Cmd::SetTempo(130.0));
+        worker.handle(Cmd::AuditionDocument {
+            key: 8,
+            name: "Doom Fuzz".into(),
+            bytes: document(90.0),
+        });
+
+        assert_eq!(buffer_tempo(&pedal), Some(90.0));
+        assert!(worker.history.is_empty(), "the edit went with Dream Pop");
+        assert!(!worker.dirty);
+        worker.handle(Cmd::EndAudition);
+        assert_eq!(
+            buffer_tempo(&pedal),
+            Some(120.0),
+            "the baseline is the first one"
+        );
+    }
+
+    /// What leaves the preset, or writes the pedal's memory, puts the
+    /// audition back first; what only edits or reads does not.
+    #[test]
+    fn only_leaving_the_preset_or_writing_ends_an_audition() {
+        assert!(ends_audition(&Cmd::SelectPreset(3)));
+        assert!(ends_audition(&Cmd::SavePreset));
+        assert!(ends_audition(&Cmd::PushSetlist(Vec::new())));
+        assert!(ends_audition(&Cmd::Disconnect));
+        assert!(!ends_audition(&Cmd::SetTempo(100.0)));
+        assert!(!ends_audition(&Cmd::Undo));
+        assert!(!ends_audition(&Cmd::SelectSnapshot(1)));
+        assert!(!ends_audition(&Cmd::ListIrs));
+        assert!(!ends_audition(&Cmd::ReadSwitches));
     }
 
     /// A copied block is the block, not the slot it sat in: pasted after

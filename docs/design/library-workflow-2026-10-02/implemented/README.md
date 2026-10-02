@@ -138,3 +138,21 @@ Scenes: `hx-audition` (sheet 02, at the three sizes in both themes),
 - An edit made during an audition still ends it, as before; stage 4 keeps it
   in the audition. The menu's note says another slot is written once chosen;
   stage 5 adds the question before it is.
+
+## Stage 4: edits during an audition stay in it
+
+Turning a knob, switching a snapshot or undoing while a tone is auditioned
+no longer ends the audition. The HX worker puts an audition back only before
+what leaves the loaded preset or writes the pedal's memory (another preset,
+Save, a slot or setlist written, a backup or restore, letting the pedal go);
+an edit stays with the tone, with an undo history of its own. Put back still
+writes the set-aside preset back byte for byte with its history, Keep keeps
+what is heard with the set-aside preset one undo step under it, and stepping
+to another tone drops the edits made to the last. On a StompStation PRO the
+worker sets the undo history aside the same way and remembers the value every
+edit replaces, the chain's included, so Put back restores those too; a save
+that arrives during an audition saves the preset's own changes. The bar
+counts the edits ("Dream Pop is playing in 01B, with 2 changes"), and a
+switch to another preset asks only about the set-aside preset's changes.
+
+Scene: `hx-audition-edited`, at 1280 × 760.

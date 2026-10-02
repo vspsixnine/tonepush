@@ -2468,7 +2468,13 @@ impl App {
     /// buffer's, or those of the buffer a cloud audition put aside, which
     /// the switch puts back only to replace.
     fn unsaved(&self) -> bool {
-        self.dirty || (self.auditioning.is_some() && self.put_aside_dirty)
+        if self.auditioning.is_some() {
+            // The audition is put back first, and its own edits go with it:
+            // what is at stake is the set-aside preset's changes.
+            self.put_aside_dirty
+        } else {
+            self.dirty
+        }
     }
 
     /// What to send to carry `then` out on `index`, once the pedal is there.
@@ -8164,6 +8170,25 @@ mod tests {
         events.send(Evt::Auditioning(Some(7))).unwrap();
         app.drain_events();
         let _ = cmds.try_iter().count();
+
+        app.request_preset(5);
+        assert!(app.confirm_switch.is_none());
+        assert!(matches!(cmds.try_recv(), Ok(Cmd::EndAudition)));
+        assert!(matches!(cmds.try_recv(), Ok(Cmd::SelectPreset(5))));
+    }
+
+    /// An audition's own edits go with it when it is put back, so a switch
+    /// from an edited audition over a clean preset asks nothing.
+    #[test]
+    fn a_switch_from_an_edited_audition_of_a_clean_preset_goes_at_once() {
+        let (mut app, events, cmds) = app();
+        events.send(loaded(2, Some(0), false)).unwrap();
+        events.send(Evt::AuditionPutAside { dirty: false }).unwrap();
+        events.send(Evt::Auditioning(Some(7))).unwrap();
+        events.send(loaded(2, Some(0), true)).unwrap();
+        app.drain_events();
+        let _ = cmds.try_iter().count();
+        assert!(app.dirty, "the audition was edited");
 
         app.request_preset(5);
         assert!(app.confirm_switch.is_none());

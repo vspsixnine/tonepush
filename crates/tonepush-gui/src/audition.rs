@@ -753,9 +753,22 @@ impl App {
             .height(22.0)
             .show(&mut words_ui);
         let slot = set_aside.slot.clone();
+        // Edits made while it plays stay with it, and the bar says so.
+        let edits = if loading {
+            0
+        } else if self.pro_active() {
+            self.pro.undo_depth()
+        } else {
+            self.undo_depth
+        };
+        let with = match edits {
+            0 => String::new(),
+            1 => ", with 1 change".to_owned(),
+            n => format!(", with {n} changes"),
+        };
         let mut parts: Vec<(String, bool)> = vec![(heard.name.clone(), true)];
         if small {
-            parts.push((format!(" in {slot}"), false));
+            parts.push((format!("{with} in {slot}"), false));
             if !set_aside.name.is_empty() {
                 parts.push((format!(" · {} set aside", set_aside.name), false));
             }
@@ -764,7 +777,7 @@ impl App {
                 if loading {
                     format!(" is on its way to {slot}. ")
                 } else {
-                    format!(" is playing in {slot}. ")
+                    format!(" is playing in {slot}{with}. ")
                 },
                 false,
             ));
