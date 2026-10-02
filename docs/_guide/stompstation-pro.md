@@ -138,7 +138,11 @@ before you click.
 HX and PRO tones share one library without becoming interchangeable. TonePush
 routes only a compatible native artifact to the connected pedal, prevents a
 setlist for one family being written to the other, and keeps identically named
-cross-device tones as separate objects.
+cross-device tones as separate objects. A PRO tone's marker says the firmware
+its chain needs: **PRO 2.x** when its preset has a chain layout, **PRO 1.5**
+when it has none. A PRO on 2.x plays both, a 1.5 tone with 2.x's default
+chain; a PRO on 1.5 cannot play a 2.x tone, and its row says so. Firmware is
+compared by release, so 1.5.10 and 1.5.12 count as the same.
 
 ## NAM and impulse-response libraries
 

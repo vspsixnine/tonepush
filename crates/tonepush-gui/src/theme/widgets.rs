@@ -938,6 +938,132 @@ impl<'a> Tag<'a> {
     }
 }
 
+/// A device marker: which pedal a tone is for, as one two-part chip, the
+/// family ("HX", "PRO") then the model ("Stomp", "Effects") or a PRO's
+/// firmware generation ("2.x"). Solid when the pedal connected plays the
+/// tone; dashed and faint when it does not. `model` empty keeps the family
+/// alone, as the smallest window does.
+#[derive(Clone, Copy, Debug)]
+pub struct Marker<'a> {
+    pub family: &'a str,
+    pub model: &'a str,
+    pub solid: bool,
+}
+
+impl<'a> Marker<'a> {
+    pub fn new(family: &'a str, model: &'a str) -> Self {
+        Marker {
+            family,
+            model,
+            solid: true,
+        }
+    }
+
+    pub fn solid(mut self, solid: bool) -> Self {
+        self.solid = solid;
+        self
+    }
+
+    fn font(&self) -> f32 {
+        10.5
+    }
+
+    fn galleys(&self, ui: &Ui) -> (Arc<Galley>, Option<Arc<Galley>>) {
+        let (family_ink, model_ink) = if self.solid {
+            (text_soft(), muted())
+        } else {
+            (faint(), faint())
+        };
+        let family = ui.painter().layout_job(paint::spaced(
+            self.family,
+            bold(self.font()),
+            family_ink,
+            0.05,
+        ));
+        let model = (!self.model.is_empty())
+            .then(|| layout(ui, self.model, medium(self.font()), model_ink));
+        (family, model)
+    }
+
+    /// How much room it takes.
+    pub fn size(&self, ui: &Ui) -> Vec2 {
+        let (family, model) = self.galleys(ui);
+        let mut width = family.size().x + if model.is_some() { 10.0 } else { 12.0 };
+        if let Some(model) = &model {
+            width += 1.0 + model.size().x + 11.0;
+        }
+        Vec2::new(width, 18.0)
+    }
+
+    /// Paint it in `rect` without allocating.
+    pub fn paint(&self, ui: &Ui, rect: Rect) {
+        let painter = ui.painter();
+        let (family, model) = self.galleys(ui);
+        let radius = CornerRadius::same(5);
+        let split = rect.left() + family.size().x + if model.is_some() { 10.0 } else { 12.0 };
+        if self.solid {
+            painter.rect_filled(
+                Rect::from_min_max(rect.min, Pos2::new(split, rect.bottom())),
+                CornerRadius {
+                    nw: 5,
+                    sw: 5,
+                    ne: if model.is_some() { 0 } else { 5 },
+                    se: if model.is_some() { 0 } else { 5 },
+                },
+                raised(),
+            );
+            painter.rect_stroke(
+                rect,
+                radius,
+                Stroke::new(1.0, line_strong()),
+                egui::StrokeKind::Inside,
+            );
+            if model.is_some() {
+                painter.vline(
+                    split + 0.5,
+                    (rect.top() + 1.0)..=(rect.bottom() - 1.0),
+                    Stroke::new(1.0, line()),
+                );
+            }
+        } else {
+            paint::dashed_rect(
+                painter,
+                rect.shrink(0.5),
+                4.5,
+                Stroke::new(1.0, line_strong()),
+                3.0,
+                2.0,
+            );
+            if model.is_some() {
+                let mut y = rect.top() + 2.0;
+                while y < rect.bottom() - 2.0 {
+                    painter.vline(
+                        split + 0.5,
+                        y..=(y + 2.0).min(rect.bottom() - 2.0),
+                        Stroke::new(1.0, line()),
+                    );
+                    y += 4.0;
+                }
+            }
+        }
+        let y = rect.center().y;
+        let family_left = rect.left() + if model.is_some() { 5.0 } else { 6.0 };
+        centred_galley(ui, family, family_left, y);
+        if let Some(model) = model {
+            centred_galley(ui, model, split + 1.0 + 5.0, y);
+        }
+    }
+
+    pub fn show(self, ui: &mut Ui) -> Response {
+        let size = self.size(ui);
+        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+        if ui.is_rect_visible(rect) {
+            self.paint(ui, rect);
+        }
+        response
+    }
+}
+
 /// A footswitch LED: lit in its colour with a glow, or a dark ring.
 pub fn paint_led(painter: &egui::Painter, centre: Pos2, radius: f32, colour: Option<Color32>) {
     match colour {

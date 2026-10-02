@@ -400,6 +400,16 @@ pub struct Meta {
     /// This person's private 1–5 star rating. Zero means unrated.
     #[serde(default)]
     pub rating: u8,
+    /// The pedal the tone was kept from, by its own name ("HX Effects",
+    /// "StompStation PRO"), or the device TonePush lists a downloaded tone
+    /// under. Compatibility is per model, and the document alone cannot tell
+    /// a Stomp from an XL. Empty for tones kept before this was recorded,
+    /// whose document is read instead.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pedal: String,
+    /// The firmware that pedal ran when the tone was kept.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub firmware: String,
 }
 
 /// The library index: which objects the library claims, and what it calls them.
@@ -877,6 +887,39 @@ pub fn save_meta(hash: &str, meta: &Meta) -> Result<Meta, String> {
         }
     }
     Ok(meta)
+}
+
+/// Record the pedal a tone was kept from, and its firmware, unless the tone
+/// already says. The first pedal is the one it was made for: keeping the
+/// same bytes again from another pedal does not move it.
+pub fn note_pedal(hash: &str, pedal: &str, firmware: &str) -> Result<(), String> {
+    record_pedal(hash, pedal, firmware, false)
+}
+
+/// Record the pedal a new revision of a tone was kept from, over what it
+/// inherited from the revision before it: the same tone saved again on a
+/// newer firmware was made on that firmware.
+pub fn set_pedal(hash: &str, pedal: &str, firmware: &str) -> Result<(), String> {
+    record_pedal(hash, pedal, firmware, true)
+}
+
+fn record_pedal(hash: &str, pedal: &str, firmware: &str, replace: bool) -> Result<(), String> {
+    if pedal.trim().is_empty() {
+        return Ok(());
+    }
+    let mut index = index_for_update()?;
+    let Some(meta) = index.tones.get_mut(hash) else {
+        return Ok(());
+    };
+    if !meta.pedal.is_empty() && !replace {
+        return Ok(());
+    }
+    if meta.pedal == pedal.trim() && meta.firmware == firmware.trim() {
+        return Ok(());
+    }
+    meta.pedal = pedal.trim().to_owned();
+    meta.firmware = firmware.trim().to_owned();
+    write_index(&index)
 }
 
 /// Whether a name is free, ignoring the tone that already holds it.
@@ -1680,6 +1723,33 @@ pub(crate) mod tests {
         std::fs::read_dir(objects_dir().unwrap())
             .map(|r| r.flatten().count())
             .unwrap_or(0)
+    }
+
+    /// The pedal a tone was kept from is recorded once: keeping the same
+    /// bytes from another pedal does not move it, and a new revision kept
+    /// from a pedal says which.
+    #[test]
+    fn a_tone_remembers_the_pedal_it_was_kept_from() {
+        let _scratch = Scratch::new("pedal");
+        let (old, _) = keep("Pedalboard Wash", "hxpreset", b"one").unwrap();
+        note_pedal(&old, "HX Effects", "3.80").unwrap();
+        note_pedal(&old, "HX Stomp", "3.70").unwrap();
+        let meta = meta_of(&old).unwrap();
+        assert_eq!(
+            (meta.pedal.as_str(), meta.firmware.as_str()),
+            ("HX Effects", "3.80")
+        );
+
+        let (new, _) = keep("Pedalboard Wash", "hxpreset", b"two").unwrap();
+        override_with(&old, &new, "Pedalboard Wash").unwrap();
+        assert_eq!(meta_of(&new).unwrap().pedal, "HX Effects", "inherited");
+        set_pedal(&new, "HX Effects", "3.81").unwrap();
+        assert_eq!(meta_of(&new).unwrap().firmware, "3.81");
+        assert_eq!(meta_of(&old).unwrap().firmware, "3.80", "the old one stays");
+
+        // A library written before this reads with nothing recorded.
+        let json = serde_json::to_string(&Meta::default()).unwrap();
+        assert!(!json.contains("pedal"), "{json}");
     }
 
     #[test]

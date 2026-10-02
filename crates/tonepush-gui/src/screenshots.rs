@@ -102,10 +102,12 @@ enum Scene {
     ProRouterPicker,
     /// Firmware 2.2.6, not verified for saving: edits are live only.
     ProReadOnly,
+    /// TonePush's public tones for the HX Stomp, in the library's Cloud.
+    HxCloud,
 }
 
 impl Scene {
-    const ALL: [Scene; 32] = [
+    const ALL: [Scene; 33] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -138,6 +140,7 @@ impl Scene {
         Scene::ProRouterThreeWay,
         Scene::ProRouterPicker,
         Scene::ProReadOnly,
+        Scene::HxCloud,
     ];
 
     fn name(self) -> &'static str {
@@ -174,6 +177,7 @@ impl Scene {
             Scene::ProRouterThreeWay => "pro-router-three-way",
             Scene::ProRouterPicker => "pro-router-picker",
             Scene::ProReadOnly => "pro-read-only",
+            Scene::HxCloud => "hx-cloud",
         }
     }
 
@@ -197,6 +201,8 @@ impl Scene {
             Scene::HxLibrary => {
                 hx_stomp(app);
                 app.page = shell::Page::Library;
+                // Every pedal's tones, so the markers of each show.
+                app.library_device_filter = None;
                 let sending = app
                     .lib_entries
                     .iter()
@@ -207,6 +213,13 @@ impl Scene {
                     hash: app.lib_entries[sending].hash.clone(),
                     name: app.lib_entries[sending].name.clone(),
                 });
+            }
+            Scene::HxCloud => {
+                hx_stomp(app);
+                cloud_feed(app);
+                app.page = shell::Page::Library;
+                app.lib_showing = crate::LibraryView::Cloud;
+                app.cloud_selected = Some(0);
             }
             Scene::HxPedal => {
                 hx_stomp(app);
@@ -322,6 +335,7 @@ impl Scene {
 fn fixture_chain(code: &str) -> Vec<shell::Mini> {
     let block = |letter: char| {
         let category = match letter.to_ascii_uppercase() {
+            'V' => "Volume/Pan",
             'W' => "Wah",
             'D' => "Distortion",
             'Y' => "Dynamics",
@@ -591,39 +605,56 @@ fn screenshots() {
     }
 }
 
-/// A library of invented tones and setlists. Each tone is a few bytes stored
-/// in the scratch library the run points at, so it has a hash and a pedal
-/// family like a real one; the rows the table draws are held in memory.
+/// The pedal a fixture tone was kept from, by the short name the fixture
+/// gives it, and the firmware it ran.
+fn fixture_pedal(key: &str) -> (&'static str, &'static str) {
+    match key {
+        "xl" => ("HX Stomp XL", "3.80"),
+        "fx" => ("HX Effects", "3.80"),
+        "lt" => ("Helix LT", "3.80"),
+        "pro2" => ("StompStation PRO", "2.0.10"),
+        "pro15" => ("StompStation PRO", "1.5.12"),
+        _ => ("HX Stomp", "3.80"),
+    }
+}
+
+/// A library of invented tones and setlists, the design's own (its
+/// `data-lib.js`). Each tone is a few bytes stored in the scratch library
+/// the run points at, so it has a hash and a pedal family like a real one;
+/// the rows the table draws are held in memory.
 fn library(app: &mut App) {
-    // Name | pedal | song | artist | character | rating | day kept in
-    // September | version | the one-line reading of its chain | the chain,
-    // a letter per block (lower case when off, a stack in brackets).
-    const TONES: [&str; 17] = [
-        "Plexi Crunch|hx|Original||drive|4|12|2|Full rig|wDA[CC]lR",
-        "Glass Clean|hx|Harbour Lights|The Night Signals|clean|4|10|1|Full rig|YACMLR",
-        "Brown Lead|hx|Static Bloom|June Arcade|hi-gain|4|11|3|Full rig|DDACLR",
-        "Ambient Swell|hx|Original||clean|3|10|1|Effects only|YMLLR",
-        "Velvet Drive|pro|Low Tide|Marlow Kent|drive|5|28|4|Full rig|YDAIEMLR",
-        "Edge of Breakup|hx|Original||drive|4|14|1|Full rig|YDACR",
-        "Doom Fuzz|hx|Iron Valley|Slow Comet|fuzz|3|15|1|Full rig|DDACr",
-        "Worship Pad|hx|Original||clean|5|16|2|Effects only|YMLRR",
-        "Glass Wall|pro|Original||clean|4|29|1|Full rig|YMDAIELR",
-        "Slapback Twang|hx|Dust Road|The Night Signals|clean|0|17|1|Full rig|YACLR",
-        "Funk Rhythm|hx|Original||clean|3|18|1|Full rig|YFACR",
-        "Tape Echo Clean|hx|Paper Boats|June Arcade|clean|4|19|2|Amp and cab|DACLR",
-        "Shimmer Lead|pro|Low Tide|Marlow Kent|hi-gain|4|29|2|Full rig|YDAIMLR",
-        "Surf Spring|hx|Original||clean|3|20|1|Amp and cab|ACRR",
-        "Octave Fuzz|hx|Original||fuzz|2|21|1|Amp and cab|PDAC",
-        "Dream Pop|hx|Glasshouse|Slow Comet|clean|4|23|1|Full rig|YMACLR",
-        "Garage Grit|hx|Original||drive|3|24|1|Amp and cab|DAC",
+    // Name | pedal it was kept from | song | artist | character | rating |
+    // day kept in September | version | the one-line reading of its chain |
+    // the chain, a letter per block (lower case when off, a stack in
+    // brackets).
+    const TONES: [&str; 19] = [
+        "Ambient Swell|stomp|Original||clean|3|10|1|Effects only|VMLLR",
+        "Big Room Lead|xl|Neon Avenue|June Arcade|hi-gain|4|22|2|Full rig|DACLR",
+        "Brown Lead|stomp|Static Bloom|June Arcade|hi-gain|4|11|3|Full rig|DACLR",
+        "Doom Fuzz|stomp|Iron Valley|Slow Comet|fuzz|3|15|1|Full rig|DDACr",
+        "Dream Pop|stomp|Glasshouse|Slow Comet|clean|4|23|1|Full rig|MACLR",
+        "Edge of Breakup|stomp|Original||drive|4|14|1|Full rig|YDACR",
+        "Funk Rhythm|stomp|Original||clean|3|18|1|Full rig|YFACR",
+        "Garage Grit|stomp|Original||drive|3|24|1|Amp and cab|DAC",
+        "Glass Clean|stomp|Harbour Lights|The Night Signals|clean|4|10|1|Full rig|YACMLR",
+        "Glass Wall|pro15|Original||clean|4|29|1|Full rig|YAIEMLR",
+        "Octave Fuzz|stomp|Original||fuzz|2|21|1|Amp and cab|PDAC",
+        "Pedalboard Wash|fx|Original||clean|3|26|1|Effects only|YMLLR",
+        "Plexi Crunch|stomp|Original||drive|4|12|2|Full rig|wDA[CC]lR",
+        "Shimmer Lead|pro2|Low Tide|Marlow Kent|hi-gain|4|29|2|Full rig|YDAILR",
+        "Slapback Twang|stomp|Dust Road|The Night Signals|clean|0|17|3|Full rig|YACLR",
+        "Surf Spring|stomp|Original||clean|3|20|1|Amp and cab|ACMR",
+        "Tape Echo Clean|stomp|Paper Boats|June Arcade|clean|4|19|2|Amp and cab|ACLR",
+        "Velvet Drive|pro2|Low Tide|Marlow Kent|drive|5|28|4|Full rig|YYwDAIE[Mm]LR",
+        "Worship Pad|stomp|Original||clean|5|16|2|Effects only|VPLRR",
     ];
     let field = |tone: &'static str, index: usize| tone.split('|').nth(index).unwrap_or_default();
     let hash = |name: &str| {
         let pedal = TONES
             .iter()
             .find(|tone| field(tone, 0) == name)
-            .map_or("hx", |tone| field(tone, 1));
-        let kind = if pedal == "pro" {
+            .map_or("stomp", |tone| field(tone, 1));
+        let kind = if pedal.starts_with("pro") {
             "vxpreset"
         } else {
             "hxpreset"
@@ -638,6 +669,8 @@ fn library(app: &mut App) {
             let number = |index: usize| field(tone, index).parse::<u32>().unwrap_or(0);
             let (name, rating, version) = (field(tone, 0), number(5) as u8, number(7));
             let kept = format!("2026-09-{:02}T18:02:00Z", number(6));
+            let (pedal, firmware) = fixture_pedal(field(tone, 1));
+            let pro = field(tone, 1).starts_with("pro");
             crate::LibEntry {
                 hash: hash(name),
                 series: hash(name),
@@ -650,13 +683,15 @@ fn library(app: &mut App) {
                     character: field(tone, 4).to_owned(),
                     rating,
                     part: "Rhythm".to_owned(),
-                    tags: if field(tone, 1) == "pro" {
+                    tags: if pro {
                         vec!["stereo".into(), "nam".into()]
                     } else {
                         vec!["stage".into()]
                     },
                     added_at: kept.clone(),
                     modified_at: kept.clone(),
+                    pedal: pedal.to_owned(),
+                    firmware: firmware.to_owned(),
                     ..Default::default()
                 },
                 added_at: kept.clone(),
@@ -666,7 +701,9 @@ fn library(app: &mut App) {
                 version,
                 versions: version,
                 chain: fixture_chain(field(tone, 9)),
-                pro: field(tone, 1) == "pro",
+                pro,
+                marker: crate::devices::Marker::of_device(pedal, firmware),
+                firmware: firmware.to_owned(),
             }
         })
         .collect();
@@ -676,6 +713,127 @@ fn library(app: &mut App) {
     // The setlists are written against the pedal's own presets, so they are
     // made with the HX Stomp's fixture; see `setlists`.
     app.lib_setlists = Vec::new();
+}
+
+/// TonePush's public feed for the HX Stomp, as the design's mockups list it:
+/// invented tones by invented creators, each with its Song, its downloads and
+/// its versions. Held in memory as the site would have answered; nothing is
+/// fetched.
+fn cloud_feed(app: &mut App) {
+    // Name | song | artist | by | character | downloads | day updated in
+    // September | version | versions | the chain, a letter per block.
+    const TONES: [&str; 9] = [
+        "Glass Cathedral|Original||Mira Holt|clean|3410|30|2|2|YACMLR",
+        "Midnight City|Neon Rain|Halcyon Drive|Tomas Reyes|drive|2184|27|1|1|YDACLR",
+        "Stadium Rhythm|Gold Coast|The Velvet Static|Ines Park|hi-gain|1902|25|3|3|YDACCR",
+        "Velvet Fuzz|Original||Dario Venn|fuzz|1288|24|1|1|DACMR",
+        "Warm Jazz Box|Blue Hour|Paper Moons|Ruth Okafor|clean|812|21|1|1|YACR",
+        "Chime Machine|Original||Mira Holt|clean|655|19|2|2|YACLLR",
+        "Dust Devil|Red Mesa|Halcyon Drive|K. Albrecht|fuzz|590|18|1|1|PDACL",
+        "Hollow Body Lead|Original||Ana Salgado|drive|418|15|1|1|YDACLR",
+        "Tidal Swell|Original||Tomas Reyes|clean|377|12|1|1|VMLRR",
+    ];
+    let field = |tone: &'static str, index: usize| tone.split('|').nth(index).unwrap_or_default();
+    let category = |letter: char| match letter.to_ascii_uppercase() {
+        'D' => 1,
+        'Y' => 2,
+        'E' => 3,
+        'M' => 4,
+        'L' => 5,
+        'R' => 6,
+        'P' => 7,
+        'F' => 8,
+        'W' => 9,
+        'A' => 11,
+        'C' => 13,
+        'I' => 14,
+        _ => 15,
+    };
+    app.cloud_entries = TONES
+        .iter()
+        .enumerate()
+        .map(|(index, tone)| {
+            let id = 9000 + index as i64;
+            let number = |at: usize| field(tone, at).parse::<u64>().unwrap_or(0);
+            let song = field(tone, 1);
+            let artist = field(tone, 2);
+            let original = song == "Original";
+            let chain: Vec<serde_json::Value> = field(tone, 9)
+                .chars()
+                .map(|letter| {
+                    serde_json::json!({
+                        "name": letter.to_string(),
+                        "category": category(letter),
+                        "enabled": letter.is_ascii_uppercase(),
+                    })
+                })
+                .collect();
+            let hash = format!("{:064x}", 0xc10d_0000_u64 + index as u64);
+            let updated = format!("2026-09-{:02}T10:00:00Z", number(6));
+            let json = serde_json::json!({
+                "id": id,
+                "song_id": id + 500,
+                "name": field(tone, 0),
+                "device": {
+                    "id": 1, "name": "HX Stomp", "slug": "hx-stomp", "family": "Helix",
+                    "manufacturer": "Line 6", "capabilities": {}, "artifact_extensions": ["hlx"]
+                },
+                "creator": field(tone, 3),
+                "description": null,
+                "state": "published",
+                "availability": "free",
+                "source_kind": "native",
+                "firmware_version": "3.80",
+                "minimum_firmware_version": null,
+                "parser_version": "0.8.0",
+                "installs_count": number(5),
+                "saves_count": 0,
+                "remix_count": 0,
+                "version_number": number(7),
+                "versions_count": number(8),
+                "created_at": "2026-09-01T10:00:00Z",
+                "updated_at": updated,
+                "parent_id": null,
+                "signal_chain": chain,
+                "file_sha256": hash,
+                "parsed_metadata": { "character": field(tone, 4) },
+                "download": { "artifact": format!("/tones/{id}/artifact") },
+                "song": {
+                    "id": id + 500,
+                    "title": song,
+                    "kind": if original { "original" } else { "song" },
+                    "artist": if original { None } else { Some(artist) },
+                    "part": "Rhythm",
+                    "description": null,
+                    "tags": ["stage"],
+                    "genres": [],
+                    "tuning": null,
+                    "guitar_type": null,
+                    "pickup_type": null,
+                    "pickup_electronics": null,
+                    "tone_count": 1,
+                    "devices": ["HX Stomp"],
+                    "file_sha256s": [hash]
+                }
+            });
+            let tone: crate::cloud::ToneDetails =
+                serde_json::from_value(json).expect("the invented tone decodes as the site's");
+            let discovered = crate::cloud::DiscoveredTone {
+                song: tone.song.clone().expect("the invented tone has its Song"),
+                tone,
+            };
+            crate::CloudEntry {
+                row: App::cloud_row(&discovered),
+                discovered,
+            }
+        })
+        .collect();
+    app.cloud_total = Some(1204);
+    // The feed on screen is the one this search asked for, so opening the
+    // Cloud does not start another.
+    app.cloud_loaded_query = Some(String::new());
+    app.cloud_loaded_order = Some(app.cloud_order);
+    app.cloud_loaded_device = Some(app.cloud_device_scope());
 }
 
 /// The setlists, written against the HX Stomp's presets: Album release show
@@ -840,15 +998,24 @@ fn setlists(app: &mut App) {
             if slot.is_empty() {
                 continue;
             }
-            let meta = app
-                .lib_entries
-                .iter()
-                .find(|entry| entry.hash == slot.hash)
-                .map(|entry| entry.meta.clone())
-                .unwrap_or_default();
-            app.library_lookup
-                .setlist_tones
-                .insert(slot.hash.clone(), crate::SetlistTone { held: true, meta });
+            let entry = app.lib_entries.iter().find(|entry| entry.hash == slot.hash);
+            let meta = entry.map(|entry| entry.meta.clone()).unwrap_or_default();
+            // A preset the library keeps only in a setlist was kept from the
+            // HX Stomp, as the setlists were.
+            let marker = entry.map_or_else(
+                || Some(crate::devices::Marker::hx("Stomp")),
+                |entry| entry.marker.clone(),
+            );
+            let firmware = entry.map_or_else(|| "3.80".to_owned(), |entry| entry.firmware.clone());
+            app.library_lookup.setlist_tones.insert(
+                slot.hash.clone(),
+                crate::SetlistTone {
+                    held: true,
+                    meta,
+                    marker,
+                    firmware,
+                },
+            );
         }
     }
 }
@@ -1050,9 +1217,13 @@ fn hx_stomp(app: &mut App) {
     app.dirty = true;
     app.undo_depth = 3;
     // What the pedal holds, as the automatic backup would say: the slots the
-    // library holds unchanged, and one it holds in another version.
+    // library holds unchanged, and one it holds in another version. A tone
+    // the library kept from another pedal is not this pedal's preset of the
+    // same name.
     for (index, name) in app.presets.clone().iter().enumerate() {
-        if let Some(entry) = app.lib_entries.iter().find(|entry| &entry.name == name) {
+        let kept_here =
+            |entry: &&crate::LibEntry| &entry.name == name && entry.meta.pedal == "HX Stomp";
+        if let Some(entry) = app.lib_entries.iter().find(kept_here) {
             let hash = if name == "Tape Echo Clean" {
                 crate::library::store(
                     name,

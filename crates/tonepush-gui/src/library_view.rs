@@ -433,6 +433,18 @@ fn category_of_colour(colour: Color32) -> Option<&'static str> {
     .find(|name| theme::category_colour(name) == colour)
 }
 
+/// A tone's device marker, in the same two words as its row: solid when the
+/// pedal connected plays it, dashed when it does not. Nothing when not even
+/// the family is known.
+pub(crate) fn marker(ui: &mut Ui, marker: Option<&crate::devices::Marker>, plays: bool) {
+    if let Some(marker) = marker {
+        theme::Marker::new(marker.family.label(), &marker.model)
+            .solid(plays)
+            .show(ui)
+            .on_hover_text(format!("For {}", marker.with_article()));
+    }
+}
+
 /// A tag as a removable chip.
 fn tag_chip(ui: &mut Ui, tag: &str) -> bool {
     let galley = shell::galley(ui, tag, theme::medium(12.0), theme::text_soft());
@@ -544,7 +556,7 @@ impl App {
             let mut tags = self
                 .lib_entries
                 .iter()
-                .filter(|entry| self.tone_in_library_scope(&entry.hash))
+                .filter(|entry| self.tone_in_library_scope(entry))
                 .flat_map(|entry| entry.meta.tags.iter().cloned())
                 .collect::<Vec<_>>();
             tags.sort();
@@ -755,22 +767,21 @@ impl App {
             self.lib_draft.name = self.lib_entries[i].meta.name.clone();
         }
         let entry = self.lib_entries[i].clone();
-        let family = if entry.pro { "StompStation PRO" } else { "HX" };
         let version = if entry.versions > 1 {
             format!("v{} of {}", entry.version, entry.versions)
         } else {
             "v1".to_owned()
         };
+        let plays = self.fit(&entry, false).plays;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let (spot, _) = ui.allocate_exact_size(Vec2::new(13.0, 16.0), Sense::hover());
-            theme::paint_icon(ui, Icon::Pedal, spot.center(), 13.0, theme::muted());
-            let mut words = vec![family.to_owned(), version];
+            ui.spacing_mut().item_spacing.x = 7.0;
+            marker(ui, entry.marker.as_ref(), plays);
+            let mut words = vec![version];
+            if !entry.meta.character.trim().is_empty() {
+                words.push(shell::sentence_case(entry.meta.character.trim()));
+            }
             if !entry.added_at.is_empty() {
                 words.push(format!("kept {}", crate::day_month(&entry.added_at)));
-            }
-            if !entry.line.is_empty() {
-                words.push(entry.line.clone());
             }
             theme::label_truncated(ui, &words.join(" · "), theme::regular(12.0), theme::muted());
         });
@@ -1139,25 +1150,30 @@ impl App {
         let (place, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::hover());
         shell::paint_line(ui, title, place.left(), place.center().y);
-        let mut words = vec![summary.device.name.clone()];
-        if let Some(creator) = summary.creator.as_ref().filter(|c| !c.is_empty()) {
-            words.push(format!("by {creator}"));
-        }
-        words.push(format!(
+        let mut words = vec![format!(
             "v{} of {}",
             summary.version_number.unwrap_or(1).max(1),
             summary.versions_count.max(1)
-        ));
-        if !summary.created_at.is_empty() {
-            words.push(format!(
-                "published {}",
-                crate::day_month(&summary.created_at)
-            ));
+        )];
+        if let Some(creator) = summary.creator.as_ref().filter(|c| !c.is_empty()) {
+            words.push(format!("by {creator}"));
         }
+        if !row.meta.character.trim().is_empty() {
+            words.push(shell::sentence_case(row.meta.character.trim()));
+        }
+        let plays = self.fit(&row, false).plays;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let (spot, _) = ui.allocate_exact_size(Vec2::new(13.0, 16.0), Sense::hover());
-            theme::paint_icon(ui, Icon::Cloud, spot.center(), 13.0, theme::muted());
+            ui.spacing_mut().item_spacing.x = 7.0;
+            if row.marker.is_some() {
+                marker(ui, row.marker.as_ref(), plays);
+            } else {
+                theme::label(
+                    ui,
+                    &summary.device.name,
+                    theme::regular(12.0),
+                    theme::muted(),
+                );
+            }
             theme::label_truncated(ui, &words.join(" · "), theme::regular(12.0), theme::muted());
         });
         if !row.chain.is_empty() {
@@ -1201,7 +1217,7 @@ impl App {
         } else {
             match blocker {
                 Some(why) => {
-                    theme::label(ui, why, theme::regular(theme::SECONDARY), theme::muted());
+                    theme::label(ui, &why, theme::regular(theme::SECONDARY), theme::muted());
                 }
                 None => {
                     if theme::Button::new("Audition on the pedal")
@@ -1594,33 +1610,41 @@ impl App {
             );
         }
         let inner = rect.shrink2(Vec2::new(10.0, 9.0));
-        let count = shell::galley(
-            ui,
-            setlist.filled().to_string(),
-            theme::regular(theme::SECONDARY),
-            theme::muted(),
-        );
-        let count_width = count.size().x;
-        shell::paint_line(ui, count, inner.right() - count_width, inner.top() + 9.0);
+        // Which pedal it is for, beside its name, as every row says.
+        let mut marker_width = 0.0;
+        if let Some(found) = self.setlist_marker(setlist) {
+            let plays = self.setlist_compatible(setlist) || !self.pedal_online();
+            let chip = theme::Marker::new(found.family.label(), &found.model).solid(plays);
+            let size = chip.size(ui);
+            chip.paint(
+                ui,
+                Rect::from_min_size(
+                    Pos2::new(inner.right() - size.x, inner.top() + 9.0 - size.y / 2.0),
+                    size,
+                ),
+            );
+            marker_width = size.x + 10.0;
+        }
         let name = shell::elided(
             ui,
             setlist.name.clone(),
             theme::semibold(14.0),
             theme::text(),
-            inner.width() - count_width - 10.0,
+            inner.width() - marker_width,
         );
         shell::paint_line(ui, name, inner.left(), inner.top() + 9.0);
+        let count = match setlist.filled() {
+            1 => "1 preset".to_owned(),
+            count => format!("{count} presets"),
+        };
         let place: Vec<&str> = [setlist.venue.as_str(), setlist.date.as_str()]
             .into_iter()
             .filter(|part| !part.trim().is_empty())
+            .chain(std::iter::once(count.as_str()))
             .collect();
         let where_when = shell::elided(
             ui,
-            if place.is_empty() {
-                "No venue or date".to_owned()
-            } else {
-                place.join(" · ")
-            },
+            place.join(" · "),
             theme::regular(12.0),
             theme::muted(),
             inner.width(),
@@ -1821,13 +1845,22 @@ impl App {
             |ui| {
                 ui.set_width(width);
                 ui.spacing_mut().item_spacing.y = 0.0;
-                let named = field(
-                    ui,
-                    "setlist-name",
-                    &mut self.lib_setlist_draft.name,
-                    "Name this setlist",
-                    theme::semibold(theme::PRESET_NAME),
-                );
+                let found = self.setlist_marker(setlist);
+                let plays = self.setlist_compatible(setlist) || !self.pedal_online();
+                let named = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let named = fitted_field(
+                            ui,
+                            "setlist-name",
+                            &mut self.lib_setlist_draft.name,
+                            "Name this setlist",
+                            theme::semibold(theme::PRESET_NAME),
+                        );
+                        marker(ui, found.as_ref(), plays);
+                        named
+                    })
+                    .inner;
                 // A setlist with no name has no file to live in.
                 if named.lost_focus() {
                     if self.lib_setlist_draft.name.trim().is_empty() {

@@ -891,6 +891,8 @@ icons! {
     Replace => "replace",
     SquareDashed => "square-dashed",
     Volume => "volume-2",
+    // A tone the pedal connected cannot play.
+    Ban => "ban",
 }
 
 impl Icon {

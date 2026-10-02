@@ -65,8 +65,19 @@ pub enum Cell {
     /// value says whether this particular view offers an action there. Sync
     /// can still be unknown while sending is useful (for example before the
     /// first pedal backup has finished), so actionability cannot be inferred
-    /// from the sync state alone.
-    Places(Vec<(theme::Icon, theme::Sync, &'static str, bool)>),
+    /// from the sync state alone. The words are the place's hover.
+    Places(Vec<(theme::Icon, theme::Sync, String, bool)>),
+    /// Which pedal a tone is for (docs/design/library-workflow-2026-10-02,
+    /// 16): the family, then the model unless the column keeps only the
+    /// family, dashed when the pedal connected cannot play it, with the
+    /// whole of it and the reason on hover. Empty when nothing is known.
+    Marker {
+        family: &'static str,
+        model: String,
+        solid: bool,
+        compact: bool,
+        hover: String,
+    },
 }
 
 impl Cell {
@@ -78,6 +89,7 @@ impl Cell {
             Cell::Name { text, .. } | Cell::Pair { text, .. } => SortKey::Text(text.to_lowercase()),
             Cell::Value { key, .. } | Cell::Chain { key, .. } => SortKey::Text(key.clone()),
             Cell::Stars { rating, .. } => SortKey::Text(rating.to_string()),
+            Cell::Marker { family, model, .. } => SortKey::Text(format!("{family} {model}")),
             // Sorted so everything with something to do gathers at the top.
             Cell::Places(places) => SortKey::Text(
                 places
@@ -683,7 +695,7 @@ impl egui_table::TableDelegate for Delegate<'_> {
                     let hit = if hover.is_empty() {
                         hit
                     } else {
-                        hit.on_hover_text(*hover)
+                        hit.on_hover_text(hover.as_str())
                     };
                     if *enabled && hit.clicked() {
                         self.did.place = Some((row, n));
@@ -792,6 +804,32 @@ impl egui_table::TableDelegate for Delegate<'_> {
                     shell::mini_chain_sized(&mut child, chain, 12.0, 6.0);
                 }
             }
+            Cell::Marker {
+                family,
+                model,
+                solid,
+                compact,
+                ..
+            } => {
+                if !family.is_empty() {
+                    let marker =
+                        theme::Marker::new(family, if *compact { "" } else { model }).solid(*solid);
+                    let size = marker.size(ui);
+                    marker.paint(
+                        ui,
+                        Rect::from_min_size(Pos2::new(left, y - size.y / 2.0), size),
+                    );
+                } else if !model.is_empty() {
+                    let galley = shell::elided(
+                        ui,
+                        model.clone(),
+                        theme::regular(12.0),
+                        theme::muted(),
+                        room,
+                    );
+                    shell::paint_line(ui, galley, left, y);
+                }
+            }
             Cell::Stars { rating, editable } => {
                 let under =
                     paint_stars(ui, y, left, *rating, if *editable { pointer } else { None });
@@ -809,10 +847,12 @@ impl egui_table::TableDelegate for Delegate<'_> {
             }
         }
 
-        let response = if matches!(content, Cell::Stars { editable: true, .. }) {
-            whole.on_hover_text("Click a star to rate it; click its rating again to clear it")
-        } else {
-            whole
+        let response = match content {
+            Cell::Stars { editable: true, .. } => {
+                whole.on_hover_text("Click a star to rate it; click its rating again to clear it")
+            }
+            Cell::Marker { hover, .. } if !hover.is_empty() => whole.on_hover_text(hover.as_str()),
+            _ => whole,
         };
 
         // A click the contents took is not a click on the cell as well:

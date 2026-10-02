@@ -16,6 +16,7 @@ mod browser;
 pub mod cloud;
 mod config;
 mod connect;
+mod devices;
 mod eq;
 mod floor;
 pub mod library;
@@ -82,6 +83,12 @@ struct LibEntry {
     chain: Vec<shell::Mini>,
     /// Whether it is a StompStation PRO tone rather than an HX one.
     pro: bool,
+    /// Which pedal it is for: recorded when it was kept, read from the
+    /// document before that, or the device TonePush lists. `None` when not
+    /// even the family can be told.
+    marker: Option<devices::Marker>,
+    /// The firmware it was made on, when that is known.
+    firmware: String,
 }
 
 /// The small, read-only view of the on-disk library that frame rendering
@@ -100,6 +107,51 @@ struct LibraryLookup {
 struct SetlistTone {
     held: bool,
     meta: library::Meta,
+    /// Which pedal it is for, and the firmware it was made on.
+    marker: Option<devices::Marker>,
+    firmware: String,
+}
+
+/// What one stored tone says about itself, read from its document once when
+/// the library is read: its name, a one-line reading of its chain, the chain
+/// as colours, which pedal it was made for and on which firmware.
+#[derive(Clone, Default)]
+struct ToneFacts {
+    name: String,
+    line: String,
+    chain: Vec<shell::Mini>,
+    marker: Option<devices::Marker>,
+    firmware: String,
+}
+
+impl ToneFacts {
+    /// The facts, with what the library recorded when it kept the tone
+    /// taking precedence: the pedal it came from tells a Stomp from an XL,
+    /// which its document cannot. A PRO tone's generation is its document's,
+    /// since that is what the pedal reads.
+    fn with_record(mut self, meta: &library::Meta) -> ToneFacts {
+        if let Some(recorded) = devices::Marker::of_device(&meta.pedal, &meta.firmware) {
+            if recorded.family == devices::Family::Hx || self.marker.is_none() {
+                self.marker = Some(recorded);
+            }
+        }
+        if !meta.firmware.trim().is_empty() {
+            self.firmware = meta.firmware.trim().to_owned();
+        }
+        self
+    }
+}
+
+/// How a row reads against the pedal connected: whether it plays there and,
+/// when it does not, why, for the marker's dashes and the ban mark.
+#[derive(Clone, Default)]
+struct Fit {
+    /// The pedal connected plays it, or no pedal is connected to judge by.
+    plays: bool,
+    /// Why it does not play, said short enough for a hover.
+    why: String,
+    /// The Pedal column keeps only the family: the smallest window.
+    compact: bool,
 }
 
 impl LibraryLookup {
@@ -204,6 +256,8 @@ struct NameClash {
     /// Keep a cloud save in the discovery workflow after the question is
     /// answered; ordinary imports continue to land in local Tones.
     return_view: Option<LibraryView>,
+    /// The pedal the tone came from, recorded once it is kept.
+    origin: Option<devices::Pedal>,
 }
 
 /// A captured pedal waiting for its setlist identity. Typing filters existing
@@ -579,6 +633,9 @@ enum LibColumn {
     /// Whether this tone is on the pedal. Not a column of text, and not one
     /// that can be turned off: it is the thing you act on.
     Sync,
+    /// Which pedal the tone is for: its device marker. Always shown, in the
+    /// same place on every table, whether or not it is the pedal connected.
+    Pedal,
     Name,
     Chain,
     /// The song and its artist in one column, as the design lists a tone.
@@ -595,8 +652,9 @@ enum LibColumn {
 }
 
 impl LibColumn {
-    const ALL: [LibColumn; 13] = [
+    const ALL: [LibColumn; 14] = [
         LibColumn::Sync,
+        LibColumn::Pedal,
         LibColumn::Name,
         LibColumn::Chain,
         LibColumn::SongArtist,
@@ -614,6 +672,7 @@ impl LibColumn {
     fn title(self) -> &'static str {
         match self {
             LibColumn::Sync => "",
+            LibColumn::Pedal => "Pedal",
             LibColumn::Name => "Name",
             LibColumn::Chain => "Chain",
             LibColumn::SongArtist => "Song · Artist",
@@ -630,9 +689,10 @@ impl LibColumn {
     }
 
     /// Columns that cannot be turned off. Without a name there is nothing to
-    /// read, and without the places there is nothing to press.
+    /// read, without the places there is nothing to press, and every row says
+    /// which pedal it is for.
     fn always(self) -> bool {
-        matches!(self, LibColumn::Sync | LibColumn::Name)
+        matches!(self, LibColumn::Sync | LibColumn::Pedal | LibColumn::Name)
     }
 
     /// The columns the table starts with: the design's, with the rest on the
@@ -648,10 +708,12 @@ impl LibColumn {
     }
 
     /// Local and Cloud tables share one column definition. Cloud passes false
-    /// because published metadata is read-only; local Tones pass true.
-    fn column(self, editable: bool) -> table::Column {
+    /// because published metadata is read-only; local Tones pass true. The
+    /// smallest window keeps the Pedal column to the family.
+    fn column(self, editable: bool, tier: theme::Tier) -> table::Column {
         let (title, width, can_edit, fills) = match self {
             LibColumn::Sync => ("", 44.0, false, false),
+            LibColumn::Pedal => ("Pedal", tier.pick(44.0, 88.0, 100.0), false, false),
             LibColumn::Name => ("Name", 150.0, true, false),
             LibColumn::Chain => ("Chain", 112.0, false, false),
             LibColumn::SongArtist => ("Song · Artist", 150.0, false, true),
@@ -679,7 +741,7 @@ impl LibColumn {
     /// from, and what a text cell shows.
     fn text(self, entry: &LibEntry) -> String {
         match self {
-            LibColumn::Sync | LibColumn::Chain => String::new(),
+            LibColumn::Sync | LibColumn::Pedal | LibColumn::Chain => String::new(),
             LibColumn::Name => entry.name.clone(),
             LibColumn::Version => {
                 if entry.versions > 1 {
@@ -706,11 +768,12 @@ impl LibColumn {
         }
     }
 
-    fn value_cell(self, entry: &LibEntry, family_tag: Option<&str>, editable: bool) -> table::Cell {
+    fn value_cell(self, entry: &LibEntry, fit: &Fit, editable: bool) -> table::Cell {
         match self {
+            LibColumn::Pedal => marker_cell(entry.marker.as_ref(), fit),
             LibColumn::Name => table::Cell::Name {
                 text: entry.name.clone(),
-                tag: family_tag.map(str::to_owned),
+                tag: None,
             },
             LibColumn::Chain => table::Cell::Chain {
                 chain: entry.chain.clone(),
@@ -760,30 +823,42 @@ impl LibColumn {
         state: theme::Sync,
         cloud: theme::Sync,
         can_send: bool,
-        family_tag: Option<&str>,
+        fit: &Fit,
     ) -> table::Cell {
         match self {
             // This row is a tone in the library, so the computer is not one of
             // the icons: it shows the pedal, and the cloud once the tone
             // browser has answered for it. The cloud is dropped entirely rather
             // than drawn blank when the site said nothing, because a
-            // permanently empty icon is furniture.
+            // permanently empty icon is furniture. A tone the pedal cannot
+            // play has a ban mark in the pedal's place, with the reason.
             LibColumn::Sync => {
-                let mut places = vec![(
-                    theme::Icon::Pedal,
-                    state,
-                    match state {
-                        theme::Sync::Absent => "Not on the pedal. Send it",
-                        theme::Sync::Same => "On the pedal",
-                        theme::Sync::Differs => {
-                            "On the pedal under this name, but different. Send this one"
+                let pedal = if fit.plays {
+                    (
+                        theme::Icon::Pedal,
+                        state,
+                        match state {
+                            theme::Sync::Absent => "Not on the pedal. Send it",
+                            theme::Sync::Same => "On the pedal",
+                            theme::Sync::Differs => {
+                                "On the pedal under this name, but different. Send this one"
+                            }
+                            theme::Sync::Working => "Sending to the pedal…",
+                            theme::Sync::Unknown if can_send => "Send it to the pedal",
+                            theme::Sync::Unknown => "Not available for the connected pedal",
                         }
-                        theme::Sync::Working => "Sending to the pedal…",
-                        theme::Sync::Unknown if can_send => "Send it to the pedal",
-                        theme::Sync::Unknown => "Not available for the connected pedal",
-                    },
-                    can_send && state != theme::Sync::Working,
-                )];
+                        .to_owned(),
+                        can_send && state != theme::Sync::Working,
+                    )
+                } else {
+                    (
+                        theme::Icon::Ban,
+                        theme::Sync::Unknown,
+                        fit.why.clone(),
+                        false,
+                    )
+                };
+                let mut places = vec![pedal];
                 if cloud != theme::Sync::Unknown {
                     places.push((
                         theme::Icon::Cloud,
@@ -796,14 +871,44 @@ impl LibColumn {
                             }
                             theme::Sync::Working => "Publishing…",
                             theme::Sync::Unknown => "",
-                        },
+                        }
+                        .to_owned(),
                         cloud != theme::Sync::Working,
                     ));
                 }
                 table::Cell::Places(places)
             }
-            _ => self.value_cell(entry, family_tag, true),
+            _ => self.value_cell(entry, fit, true),
         }
+    }
+}
+
+/// A row's device marker cell: solid when the pedal connected plays the
+/// tone, dashed with the reason when it does not, and on the smallest window
+/// the family alone, the model left to the hover and the inspector.
+fn marker_cell(marker: Option<&devices::Marker>, fit: &Fit) -> table::Cell {
+    let Some(marker) = marker else {
+        return table::Cell::Marker {
+            family: "",
+            model: String::new(),
+            solid: true,
+            compact: fit.compact,
+            hover: String::new(),
+        };
+    };
+    let mut hover = format!("For {}", marker.with_article());
+    if marker.family == devices::Family::Pro && !marker.model.is_empty() {
+        hover = format!("{hover} on firmware {}", marker.model);
+    }
+    if !fit.plays && !fit.why.is_empty() {
+        hover = format!("{hover}. {}", fit.why);
+    }
+    table::Cell::Marker {
+        family: marker.family.label(),
+        model: marker.model.clone(),
+        solid: fit.plays,
+        compact: fit.compact,
+        hover,
     }
 }
 
@@ -948,38 +1053,144 @@ impl App {
         }
     }
 
-    fn device_is_pro(device: &str) -> bool {
-        device.to_ascii_lowercase().contains("stompstation")
+    /// The pedal connected, as tones are judged against it: its name and the
+    /// firmware it runs. `None` with no pedal.
+    fn pedal(&self) -> Option<devices::Pedal> {
+        if !self.pedal_online() || self.device.trim().is_empty() {
+            return None;
+        }
+        Some(devices::Pedal {
+            name: self.device.trim().to_owned(),
+            firmware: self.firmware.trim().to_owned(),
+        })
     }
 
-    fn tone_matches_device(hash: &str, device: &str) -> bool {
-        match library::kind(hash).as_deref() {
-            Some("vxpreset") => Self::device_is_pro(device),
-            Some("hxpreset" | "hlx") => !Self::device_is_pro(device),
-            _ => false,
+    /// The pedal the library is scoped to: the one connected, with its
+    /// firmware, or a pedal by name once it has gone.
+    fn scope_pedal(&self) -> Option<devices::Pedal> {
+        let device = self.library_device_filter.as_deref()?;
+        Some(match self.pedal().filter(|pedal| pedal.name == device) {
+            Some(pedal) => pedal,
+            None => devices::Pedal {
+                name: device.to_owned(),
+                firmware: String::new(),
+            },
+        })
+    }
+
+    /// Whether a pedal plays a tone of this marker, made on that firmware. A
+    /// tone nothing more is known about is judged by its family alone.
+    fn plays_on(
+        pedal: &devices::Pedal,
+        marker: Option<&devices::Marker>,
+        firmware: &str,
+        pro: bool,
+    ) -> bool {
+        match marker {
+            Some(marker) => devices::verdict(pedal, marker, firmware).plays(),
+            None => pedal
+                .marker()
+                .is_some_and(|connected| (connected.family == devices::Family::Pro) == pro),
         }
     }
 
-    fn tone_in_library_scope(&self, hash: &str) -> bool {
-        self.library_device_filter
-            .as_deref()
-            .is_none_or(|device| Self::tone_matches_device(hash, device))
+    /// Why the pedal connected cannot play a tone of this marker, said short
+    /// enough for a hover, or `None` when it can or there is no pedal.
+    fn refusal_hint(
+        &self,
+        marker: Option<&devices::Marker>,
+        firmware: &str,
+        pro: bool,
+    ) -> Option<String> {
+        let pedal = self.pedal()?;
+        match marker {
+            Some(marker) => match devices::verdict(&pedal, marker, firmware) {
+                devices::Verdict::Refused(refusal) => {
+                    Some(devices::refusal_hint(&refusal, marker, &pedal))
+                }
+                _ => None,
+            },
+            None => (!Self::plays_on(&pedal, None, "", pro))
+                .then(|| format!("The {} cannot play this tone", pedal.name)),
+        }
+    }
+
+    /// How a library or TonePush row reads against the pedal connected.
+    fn fit(&self, entry: &LibEntry, compact: bool) -> Fit {
+        let why = self.refusal_hint(entry.marker.as_ref(), &entry.firmware, entry.pro);
+        Fit {
+            plays: why.is_none(),
+            why: why.unwrap_or_default(),
+            compact,
+        }
+    }
+
+    /// Why the pedal connected cannot play a tone, in a sentence that names
+    /// it, or `None` when it can (or there is no pedal).
+    fn refusal_of(&self, entry: &LibEntry) -> Option<String> {
+        let pedal = self.pedal()?;
+        match entry.marker.as_ref() {
+            Some(marker) => match devices::verdict(&pedal, marker, &entry.firmware) {
+                devices::Verdict::Refused(refusal) => Some(devices::refusal_words(
+                    &refusal,
+                    &entry.name,
+                    marker,
+                    &pedal,
+                )),
+                _ => None,
+            },
+            None => (!Self::plays_on(&pedal, None, "", entry.pro)).then(|| {
+                format!(
+                    "{} is for another pedal. The {} cannot play it.",
+                    entry.name, pedal.name
+                )
+            }),
+        }
+    }
+
+    fn tone_in_library_scope(&self, entry: &LibEntry) -> bool {
+        self.scope_pedal().is_none_or(|pedal| {
+            Self::plays_on(&pedal, entry.marker.as_ref(), &entry.firmware, entry.pro)
+        })
     }
 
     fn setlist_in_library_scope(&self, setlist: &library::Setlist) -> bool {
-        self.library_device_filter.as_deref().is_none_or(|device| {
+        self.scope_pedal().is_none_or(|pedal| {
             setlist
                 .slots
                 .iter()
                 .filter(|slot| !slot.is_empty())
-                .all(|slot| Self::tone_matches_device(&slot.hash, device))
+                .all(|slot| {
+                    let tone = self.library_lookup.setlist_tones.get(&slot.hash);
+                    Self::plays_on(
+                        &pedal,
+                        tone.and_then(|tone| tone.marker.as_ref()),
+                        tone.map_or("", |tone| tone.firmware.as_str()),
+                        library::kind(&slot.hash).as_deref() == Some("vxpreset"),
+                    )
+                })
         })
+    }
+
+    /// The pedal a setlist is for: the marker its tones share, or its first
+    /// tone's when they differ.
+    fn setlist_marker(&self, setlist: &library::Setlist) -> Option<devices::Marker> {
+        setlist
+            .slots
+            .iter()
+            .filter(|slot| !slot.is_empty())
+            .find_map(|slot| {
+                self.library_lookup
+                    .setlist_tones
+                    .get(&slot.hash)
+                    .and_then(|tone| tone.marker.clone())
+            })
     }
 
     fn scoped_tone_count(&self) -> usize {
         self.lib_entries
             .iter()
-            .filter(|entry| self.tone_in_library_scope(&entry.hash))
+            .filter(|entry| self.tone_in_library_scope(entry))
             .count()
     }
 
@@ -1465,7 +1676,10 @@ impl App {
                             self.clipboard = Some((name.clone(), blob));
                             self.note(format!("copied {name} ({size} bytes)"));
                         }
-                        CopyTarget::Library => self.keep_tone(&name, "hxpreset", &blob),
+                        CopyTarget::Library => {
+                            let origin = self.origin();
+                            self.keep_tone(&name, "hxpreset", &blob, origin);
+                        }
                     }
                 }
                 Ok(Evt::Irs(slots)) => self.irs = slots,
@@ -1659,12 +1873,16 @@ impl eframe::App for App {
             self.problem(problem);
         }
         for (name, bytes, replace) in self.pro.take_library_documents() {
+            let origin = self.pro_origin();
             if replace {
                 let updated = library::named(&name)
                     .ok_or_else(|| "that tone disappeared from the library".to_owned())
                     .and_then(|old| {
                         let hash = library::store(&name, &bytes, "vxpreset")?;
                         library::override_with(&old.hash, &hash, &old.meta.name)?;
+                        if let Some(origin) = &origin {
+                            library::set_pedal(&hash, &origin.name, &origin.firmware)?;
+                        }
                         Ok(())
                     });
                 match updated {
@@ -1675,7 +1893,7 @@ impl eframe::App for App {
                     Err(why) => self.note(why),
                 }
             } else {
-                self.keep_tone(&name, "vxpreset", &bytes);
+                self.keep_tone(&name, "vxpreset", &bytes, origin);
             }
         }
         for slots in self.pro.take_captured_setlists() {
@@ -2076,7 +2294,10 @@ impl App {
             // the preset first. It used to, which threw away the edit buffer to
             // save a preset the person was not even looking at.
             RowAction::Keep => match self.slot_document(index) {
-                Some((name, bytes)) => self.keep_tone(&name, "hxpreset", &bytes),
+                Some((name, bytes)) => {
+                    let origin = self.origin();
+                    self.keep_tone(&name, "hxpreset", &bytes, origin);
+                }
                 None => self.on_preset(index, AfterSwitch::Copy(CopyTarget::Library)),
             },
             // The directed version, for when the library already has this name
@@ -2090,8 +2311,14 @@ impl App {
                 let Some(old) = library::named(&name) else {
                     return self.row_action(index, RowAction::Keep);
                 };
-                let outcome = library::store(&name, &bytes, "hxpreset")
-                    .and_then(|hash| library::override_with(&old.hash, &hash, &name));
+                let origin = self.origin();
+                let outcome = library::store(&name, &bytes, "hxpreset").and_then(|hash| {
+                    library::override_with(&old.hash, &hash, &name)?;
+                    match &origin {
+                        Some(origin) => library::set_pedal(&hash, &origin.name, &origin.firmware),
+                        None => Ok(()),
+                    }
+                });
                 match outcome {
                     Ok(()) => {
                         self.lib_showing = LibraryView::Tones;
@@ -2324,9 +2551,13 @@ impl App {
     /// tones come back different from what went in is not a library. The bytes
     /// go in verbatim, and `.hlx` stays available on export for anyone who
     /// wants the readable form.
-    fn keep_tone(&mut self, name: &str, ext: &str, blob: &[u8]) {
+    ///
+    /// `origin` is the pedal the tone came from, recorded with it: the
+    /// library's device marker, and what publishing says it is for.
+    fn keep_tone(&mut self, name: &str, ext: &str, blob: &[u8], origin: Option<devices::Pedal>) {
         match library::keep(name, ext, blob) {
-            Ok((_, library::Keeping::Kept)) => {
+            Ok((hash, library::Keeping::Kept)) => {
+                self.note_origin(&hash, origin.as_ref());
                 self.lib_showing = LibraryView::Tones;
                 self.refresh_library();
                 self.note(format!("kept {name} in the library"));
@@ -2334,7 +2565,8 @@ impl App {
             // Keeping a tone that is already kept is not a mistake and not an
             // error; it just has nothing to do. Saying which name it is under
             // answers the question the person was really asking.
-            Ok((_, library::Keeping::Already(under))) => {
+            Ok((hash, library::Keeping::Already(under))) => {
+                self.note_origin(&hash, origin.as_ref());
                 self.lib_showing = LibraryView::Tones;
                 self.note(if under == name {
                     format!("{name} is already in your library")
@@ -2351,10 +2583,39 @@ impl App {
                     holder,
                     cloud_meta: None,
                     return_view: None,
+                    origin,
                 });
             }
             Err(why) => self.note(why),
         }
+    }
+
+    /// Record the pedal a tone came from, when the library does not know it
+    /// yet.
+    fn note_origin(&mut self, hash: &str, origin: Option<&devices::Pedal>) {
+        if let Some(origin) = origin {
+            if let Err(why) = library::note_pedal(hash, &origin.name, &origin.firmware) {
+                self.note(why);
+            }
+        }
+    }
+
+    /// The pedal connected, as the origin of what is kept from it.
+    fn origin(&self) -> Option<devices::Pedal> {
+        self.pedal()
+    }
+
+    /// The StompStation PRO, as the origin of what is kept from it, read
+    /// from its panel: the app's own device facts follow it a frame later.
+    fn pro_origin(&self) -> Option<devices::Pedal> {
+        let firmware = self.pro.firmware();
+        (!firmware.is_empty()).then(|| devices::Pedal {
+            name: match self.pro.device_name() {
+                "" => "StompStation PRO".to_owned(),
+                name => name.to_owned(),
+            },
+            firmware: firmware.to_owned(),
+        })
     }
 
     /// The question a taken name asks, and the two answers to it.
@@ -2456,6 +2717,15 @@ impl App {
                         self.note(why);
                     }
                 }
+                // A new version inherits its notes from the one before it,
+                // but it was made on the pedal it came from now.
+                if let Some(origin) = &clash.origin {
+                    if let Err(why) =
+                        library::set_pedal(&clash.hash, &origin.name, &origin.firmware)
+                    {
+                        self.note(why);
+                    }
+                }
                 self.lib_showing = clash.return_view.unwrap_or(LibraryView::Tones);
                 self.refresh_library();
                 self.note(said);
@@ -2517,6 +2787,16 @@ impl App {
             self.device.trim()
         }
         .to_owned();
+        let origin = if kind == "vxpreset" {
+            self.pro_origin()
+        } else {
+            self.origin()
+        };
+        let record = |hash: &str, replace: bool| match &origin {
+            Some(origin) if replace => library::set_pedal(hash, &origin.name, &origin.firmware),
+            Some(origin) => library::note_pedal(hash, &origin.name, &origin.firmware),
+            None => Ok(()),
+        };
         for (name, bytes) in slots {
             let Some(bytes) = bytes else {
                 kept.push(library::Slot::default());
@@ -2526,30 +2806,34 @@ impl App {
             // preset with an existing name is the next revision of that tone;
             // identical bytes remain the same content-addressed revision.
             let captured = library::keep(&name, kind, &bytes).and_then(|(hash, how)| {
-                if matches!(how, library::Keeping::NameTaken { .. }) {
-                    let old = library::named(&name)
-                        .ok_or_else(|| "that tone disappeared during capture".to_owned())?;
-                    let old_kind = library::kind(&old.hash).unwrap_or_default();
-                    let same_family = (kind == "vxpreset") == (old_kind == "vxpreset");
-                    if same_family {
-                        library::override_with(&old.hash, &hash, &old.meta.name)?;
-                    } else {
-                        // Names are unique in the shared library, but a factory
-                        // name is not a cross-device identity. Keep both and
-                        // qualify only the computer-side label; the setlist
-                        // below retains the exact name the pedal displays.
-                        let base = format!("{name} · {device_label}");
-                        let mut candidate = base.clone();
-                        let mut suffix = 2;
-                        while library::named(&candidate).is_some() {
-                            candidate = format!("{base} {suffix}");
-                            suffix += 1;
-                        }
-                        let (_, kept) = library::keep(&candidate, kind, &bytes)?;
-                        if !matches!(kept, library::Keeping::Kept | library::Keeping::Already(_)) {
-                            return Err("could not choose a distinct cross-device name".into());
-                        }
+                if !matches!(how, library::Keeping::NameTaken { .. }) {
+                    record(&hash, false)?;
+                    return Ok(hash);
+                }
+                let old = library::named(&name)
+                    .ok_or_else(|| "that tone disappeared during capture".to_owned())?;
+                let old_kind = library::kind(&old.hash).unwrap_or_default();
+                let same_family = (kind == "vxpreset") == (old_kind == "vxpreset");
+                if same_family {
+                    library::override_with(&old.hash, &hash, &old.meta.name)?;
+                    record(&hash, true)?;
+                } else {
+                    // Names are unique in the shared library, but a factory
+                    // name is not a cross-device identity. Keep both and
+                    // qualify only the computer-side label; the setlist
+                    // below retains the exact name the pedal displays.
+                    let base = format!("{name} · {device_label}");
+                    let mut candidate = base.clone();
+                    let mut suffix = 2;
+                    while library::named(&candidate).is_some() {
+                        candidate = format!("{base} {suffix}");
+                        suffix += 1;
                     }
+                    let (_, kept) = library::keep(&candidate, kind, &bytes)?;
+                    if !matches!(kept, library::Keeping::Kept | library::Keeping::Already(_)) {
+                        return Err("could not choose a distinct cross-device name".into());
+                    }
+                    record(&hash, false)?;
                 }
                 Ok(hash)
             });
@@ -2761,6 +3045,9 @@ impl App {
         if !self.tone_kind_compatible(&entry.hash) {
             return self.note(format!("{} is for a different pedal family", entry.name));
         }
+        if let Some(why) = self.refusal_of(entry) {
+            return self.note(why);
+        }
         self.sending = Some(Sending {
             hash: entry.hash.clone(),
             name: entry.name.clone(),
@@ -2906,32 +3193,35 @@ impl App {
         let mut setlist_tones = std::collections::HashMap::new();
         for hash in setlist_hashes {
             let held = library::holds(&hash);
+            let meta = metadata.get(&hash).cloned().unwrap_or_default();
             let fact = if held {
-                self.library_facts(&hash)
+                self.library_facts(&hash).with_record(&meta)
             } else {
-                (String::new(), String::new(), Vec::new())
+                ToneFacts::default()
             };
             facts.insert(hash.clone(), fact.clone());
             setlist_tones.insert(
                 hash.clone(),
                 SetlistTone {
                     held,
-                    meta: metadata.get(&hash).cloned().unwrap_or_default(),
+                    meta,
+                    marker: fact.marker,
+                    firmware: fact.firmware,
                 },
             );
         }
 
         let mut entries = Vec::with_capacity(disk_entries.len());
         for entry in disk_entries {
-            let (derived, line, chain) = facts
+            let fact = facts
                 .get(&entry.hash)
                 .cloned()
-                .unwrap_or_else(|| self.library_facts(&entry.hash));
+                .unwrap_or_else(|| self.library_facts(&entry.hash).with_record(&entry.meta));
             let pro = library::kind(&entry.hash).as_deref() == Some("vxpreset");
             // The recorded name wins: it is what the pedal shows, colon and
             // all, where a name read back off the document may not be.
             let name = if entry.meta.name.is_empty() {
-                derived
+                fact.name
             } else {
                 entry.meta.name.clone()
             };
@@ -2939,7 +3229,7 @@ impl App {
                 hash: entry.hash,
                 series: entry.series,
                 name,
-                line,
+                line: fact.line,
                 added_at: entry.meta.added_at.clone(),
                 modified_at: entry.meta.modified_at.clone(),
                 downloads: None,
@@ -2947,8 +3237,10 @@ impl App {
                 version: entry.version,
                 versions: entry.versions,
                 meta: entry.meta,
-                chain,
+                chain: fact.chain,
                 pro,
+                marker: fact.marker,
+                firmware: fact.firmware,
             });
         }
         self.lib_entries = entries;
@@ -3067,61 +3359,79 @@ impl App {
 
     /// The tone name and a one-line chain reading for a stored tone, read
     /// through the same codec the preview uses.
-    fn library_facts(&self, hash: &str) -> (String, String, Vec<shell::Mini>) {
-        let fallback = library::short(hash).to_owned();
+    fn library_facts(&self, hash: &str) -> ToneFacts {
+        let fallback = ToneFacts {
+            name: library::short(hash).to_owned(),
+            ..ToneFacts::default()
+        };
         let Some(bytes) = library::read(hash) else {
-            return (fallback, String::new(), Vec::new());
+            return fallback;
         };
         if library::kind(hash).as_deref() == Some("vxpreset") {
-            return (
-                fallback,
-                pro::preset_content(&bytes).unwrap_or_default(),
-                pro::preset_minis(&bytes),
-            );
+            return ToneFacts {
+                line: pro::preset_content(&bytes).unwrap_or_default(),
+                chain: pro::preset_minis(&bytes),
+                marker: devices::of_pro_document(&bytes),
+                ..fallback
+            };
         }
-        let Some(catalog) = self.catalog.as_ref() else {
-            return (fallback, String::new(), Vec::new());
-        };
         if library::kind(hash).as_deref() == Some("hlx") {
-            let tone = serde_json::from_slice::<serde_json::Value>(&bytes)
-                .ok()
-                .map(|json| hx_catalog::inspect(&json, catalog));
-            return match tone {
-                Some(t) => {
-                    // A file says each block's path and place, not its lanes:
-                    // its strip is the blocks in order.
-                    let mut blocks: Vec<_> = t.blocks.iter().collect();
-                    blocks.sort_by_key(|block| (block.path, block.position));
-                    let chain = blocks
-                        .iter()
-                        .map(|block| shell::Mini::Block {
-                            colour: block
-                                .category
-                                .and_then(theme::category_name)
-                                .map_or_else(theme::muted, theme::category_colour),
-                            on: block.enabled,
-                        })
-                        .collect();
-                    (t.name.clone(), Self::tone_content(&t).to_owned(), chain)
-                }
-                None => (fallback, String::new(), Vec::new()),
+            let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                return fallback;
+            };
+            let marker = devices::of_hlx(&json).or_else(|| Some(devices::Marker::hx("Stomp")));
+            let Some(catalog) = self.catalog.as_ref() else {
+                return ToneFacts { marker, ..fallback };
+            };
+            let tone = hx_catalog::inspect(&json, catalog);
+            // A file says each block's path and place, not its lanes: its
+            // strip is the blocks in order.
+            let mut blocks: Vec<_> = tone.blocks.iter().collect();
+            blocks.sort_by_key(|block| (block.path, block.position));
+            let chain = blocks
+                .iter()
+                .map(|block| shell::Mini::Block {
+                    colour: block
+                        .category
+                        .and_then(theme::category_name)
+                        .map_or_else(theme::muted, theme::category_colour),
+                    on: block.enabled,
+                })
+                .collect();
+            return ToneFacts {
+                name: tone.name.clone(),
+                line: Self::tone_content(&tone).to_owned(),
+                chain,
+                marker,
+                firmware: String::new(),
             };
         }
         let Some(preset) = hx_proto::preset::Preset::parse(&bytes) else {
-            return (fallback, String::new(), Vec::new());
+            return fallback;
+        };
+        let marker = Some(devices::of_hx_document(&preset));
+        let firmware = preset.firmware().unwrap_or_default();
+        let Some(catalog) = self.catalog.as_ref() else {
+            return ToneFacts {
+                marker,
+                firmware,
+                ..fallback
+            };
         };
         let tone = hx_catalog::inspect(
-            &hx_catalog::to_hlx(&preset, catalog, &fallback).document,
+            &hx_catalog::to_hlx(&preset, catalog, &fallback.name).document,
             catalog,
         );
         let chain = shell::minis(&session::chain_of(&preset), &preset.layout(), |block| {
             catalog_colour(catalog, block)
         });
-        (
-            tone.name.clone(),
-            Self::tone_content(&tone).to_owned(),
+        ToneFacts {
+            name: tone.name.clone(),
+            line: Self::tone_content(&tone).to_owned(),
             chain,
-        )
+            marker,
+            firmware,
+        }
     }
 
     /// Load a row's metadata into the editable draft.
@@ -3320,12 +3630,25 @@ impl App {
     /// Why this public row cannot currently replace the pedal's edit buffer.
     /// Discovery itself stays global; only this one device-writing action is
     /// compatibility constrained.
-    fn cloud_audition_blocker(&self, entry: &cloud::DiscoveredTone) -> Option<&'static str> {
+    fn cloud_audition_blocker(&self, entry: &cloud::DiscoveredTone) -> Option<String> {
         if !self.pedal_online() {
-            return Some("Connect a pedal to audition this Tone");
+            return Some("Connect a pedal to audition this Tone".to_owned());
         }
-        if !cloud::compatible_device(&self.device, &entry.tone.summary.device.name) {
-            return Some("This Tone is for a different device; keep it on the computer instead");
+        let marker = Self::cloud_marker(entry);
+        let firmware = Self::cloud_firmware(entry);
+        match marker.as_ref() {
+            Some(_) => {
+                let pro = entry.tone.summary.device.name.contains("StompStation");
+                if let Some(why) = self.refusal_hint(marker.as_ref(), &firmware, pro) {
+                    return Some(why);
+                }
+            }
+            None => {
+                return Some(format!(
+                    "This Tone is for {}; keep it on the computer instead",
+                    entry.tone.summary.device.name
+                ));
+            }
         }
         if entry
             .tone
@@ -3335,7 +3658,8 @@ impl App {
             .is_none()
         {
             return Some(
-                "The preset file is at its original catalog and cannot be auditioned directly",
+                "The preset file is at its original catalog and cannot be auditioned directly"
+                    .to_owned(),
             );
         }
         None
@@ -3445,7 +3769,11 @@ impl App {
                 } else {
                     "hlx"
                 };
-                self.keep_tone(&entry.tone.summary.name, kind, &bytes);
+                let origin = devices::Pedal {
+                    name: entry.tone.summary.device.name.clone(),
+                    firmware: Self::cloud_firmware(entry),
+                };
+                self.keep_tone(&entry.tone.summary.name, kind, &bytes, Some(origin));
                 self.lib_showing = view;
                 let hash = library::hash_of(&bytes);
                 let published = Self::cloud_meta(entry);
@@ -3533,6 +3861,8 @@ impl App {
             added_at: String::new(),
             modified_at: String::new(),
             rating: 0,
+            pedal: entry.tone.summary.device.name.clone(),
+            firmware: Self::cloud_firmware(entry),
         }
     }
 
@@ -3587,7 +3917,34 @@ impl App {
                 })
                 .collect(),
             pro: entry.tone.summary.device.name.contains("StompStation"),
+            marker: Self::cloud_marker(entry),
+            firmware: Self::cloud_firmware(entry),
         }
+    }
+
+    /// The firmware a TonePush tone needs: the minimum it lists, or the one
+    /// it was published from.
+    fn cloud_firmware(entry: &cloud::DiscoveredTone) -> String {
+        let summary = &entry.tone.summary;
+        summary
+            .minimum_firmware_version
+            .as_deref()
+            .or(summary.firmware_version.as_deref())
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    }
+
+    /// Which pedal a TonePush tone is for: the device the site lists, and
+    /// for a StompStation PRO the generation of the firmware it was made on.
+    /// A PRO tone that does not say keeps the family alone.
+    fn cloud_marker(entry: &cloud::DiscoveredTone) -> Option<devices::Marker> {
+        let device = &entry.tone.summary.device.name;
+        let firmware = Self::cloud_firmware(entry);
+        if device.to_ascii_lowercase().contains("stompstation") && firmware.is_empty() {
+            return Some(devices::Marker::pro(""));
+        }
+        devices::Marker::of_device(device, &firmware)
     }
 
     fn local_cloud_entry(&mut self, wanted: Option<&str>) -> Option<usize> {
@@ -3628,9 +3985,13 @@ impl App {
             })
             .map(|(index, _)| index)
             .collect();
+        let tier = theme::Tier::now(ui.ctx());
         let shown = self.shown_columns();
         let mut grid = table::Grid {
-            columns: shown.iter().map(|column| column.column(false)).collect(),
+            columns: shown
+                .iter()
+                .map(|column| column.column(false, tier))
+                .collect(),
             sort: (
                 shown
                     .iter()
@@ -3653,39 +4014,47 @@ impl App {
             let entry = &self.cloud_entries[row].discovered;
             let local = &self.cloud_entries[row].row;
             let audition_blocker = self.cloud_audition_blocker(entry);
+            let fit = self.fit(local, tier == theme::Tier::S);
             let downloading = self
                 .cloud_download
                 .as_ref()
                 .filter(|job| job.entry.tone.summary.id == entry.tone.summary.id);
+            let pedal_place = if !fit.plays {
+                (
+                    theme::Icon::Ban,
+                    theme::Sync::Unknown,
+                    fit.why.clone(),
+                    false,
+                )
+            } else {
+                (
+                    theme::Icon::Pedal,
+                    if audition_blocker.is_some() {
+                        theme::Sync::Unknown
+                    } else if downloading.is_some_and(|job| job.action == CloudAction::Audition) {
+                        theme::Sync::Working
+                    } else if self.auditioning == Some(entry.tone.summary.id) {
+                        theme::Sync::Same
+                    } else {
+                        theme::Sync::Absent
+                    },
+                    if self.auditioning == Some(entry.tone.summary.id) {
+                        "Auditioning now. Keep it in the pedal's edit buffer".to_owned()
+                    } else if let Some(why) = audition_blocker.clone() {
+                        why
+                    } else {
+                        "Audition this Tone on the pedal".to_owned()
+                    },
+                    audition_blocker.is_none()
+                        && !downloading.is_some_and(|job| job.action == CloudAction::Audition),
+                )
+            };
             grid.rows.push(
                 shown
                     .iter()
                     .map(|column| match column {
                         LibColumn::Sync => table::Cell::Places(vec![
-                            (
-                                theme::Icon::Pedal,
-                                if audition_blocker.is_some() {
-                                    theme::Sync::Unknown
-                                } else if downloading
-                                    .is_some_and(|job| job.action == CloudAction::Audition)
-                                {
-                                    theme::Sync::Working
-                                } else if self.auditioning == Some(entry.tone.summary.id) {
-                                    theme::Sync::Same
-                                } else {
-                                    theme::Sync::Absent
-                                },
-                                if self.auditioning == Some(entry.tone.summary.id) {
-                                    "Auditioning now. Keep it in the pedal's edit buffer"
-                                } else if let Some(why) = audition_blocker {
-                                    why
-                                } else {
-                                    "Audition this Tone on the pedal"
-                                },
-                                audition_blocker.is_none()
-                                    && !downloading
-                                        .is_some_and(|job| job.action == CloudAction::Audition),
-                            ),
+                            pedal_place.clone(),
                             (
                                 theme::Icon::Computer,
                                 if downloading
@@ -3701,11 +4070,12 @@ impl App {
                                     "In your library"
                                 } else {
                                     "Keep this Tone in your library"
-                                },
+                                }
+                                .to_owned(),
                                 !downloading.is_some_and(|job| job.action == CloudAction::Computer),
                             ),
                         ]),
-                        _ => column.value_cell(local, self.family_tag(local.pro), false),
+                        _ => column.value_cell(local, &fit, false),
                     })
                     .collect(),
             );
@@ -3987,13 +4357,14 @@ impl App {
     /// The middle table: one row per tone, filtered by the chosen tag. Click to
     /// select for the inspector; double-click to open its preview.
     fn library_table(&mut self, ui: &mut egui::Ui) {
+        let tier = theme::Tier::now(ui.ctx());
         let filter = self.lib_tag_filter.clone();
         let needle = self.tone_search.trim().to_ascii_lowercase();
         let rows: Vec<usize> = self
             .lib_entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| self.tone_in_library_scope(&entry.hash))
+            .filter(|(_, entry)| self.tone_in_library_scope(entry))
             .filter(|(_, entry)| {
                 filter
                     .as_ref()
@@ -4017,7 +4388,10 @@ impl App {
 
         let shown = self.shown_columns();
         let mut grid = table::Grid {
-            columns: shown.iter().map(|column| column.column(true)).collect(),
+            columns: shown
+                .iter()
+                .map(|column| column.column(true, tier))
+                .collect(),
             sort: (
                 shown
                     .iter()
@@ -4059,12 +4433,13 @@ impl App {
             } else {
                 self.cloud_sync(&hash)
             };
-            let tag = self.family_tag(self.lib_entries[i].pro);
+            let fit = self.fit(&self.lib_entries[i], tier == theme::Tier::S);
+            let can_send = can_send && fit.plays;
             let entry = &self.lib_entries[i];
             grid.rows.push(
                 shown
                     .iter()
-                    .map(|c| c.cell(entry, state, cloud, can_send, tag))
+                    .map(|c| c.cell(entry, state, cloud, can_send, &fit))
                     .collect(),
             );
             grid.chosen.push(self.lib_chosen.contains(&entry.hash));
@@ -4146,16 +4521,6 @@ impl App {
         }
     }
 
-    /// The tag after a tone's name when it is for the other family of pedal
-    /// than the one connected: "PRO" beside an HX, "HX" beside a PRO.
-    fn family_tag(&self, pro: bool) -> Option<&'static str> {
-        match (pro, self.pro_active()) {
-            (true, false) => Some("PRO"),
-            (false, true) => Some("HX"),
-            _ => None,
-        }
-    }
-
     /// Begin, carry on, or finish typing in a cell.
     fn lib_draft_edit(
         &mut self,
@@ -4223,6 +4588,7 @@ impl App {
                 meta.rating = rating;
             }
             LibColumn::Sync
+            | LibColumn::Pedal
             | LibColumn::Version
             | LibColumn::Chain
             | LibColumn::SongArtist
@@ -4309,19 +4675,44 @@ impl App {
         if let Some(publishing) = &self.publishing {
             return self.problem(format!("{} is already being published", publishing.name));
         }
+        let (hash, name, request) = match self.publish_request(entry) {
+            Ok(built) => built,
+            Err(why) => return self.problem(why),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(cloud::publish(&token, &request));
+            ctx.request_repaint();
+        });
+        self.status.clear();
+        self.publishing = Some(PublishingJob {
+            hash,
+            name,
+            answer: rx,
+        });
+    }
+
+    /// What publishing a library tone sends: its Song, and the Tone with its
+    /// publishable preset and what the library knows of it. Also the tone's
+    /// hash and name, for the job that waits on the answer.
+    fn publish_request(
+        &self,
+        entry: usize,
+    ) -> Result<(String, String, cloud::PublishRequest), String> {
         let Some(entry) = self.lib_entries.get(entry) else {
-            return;
+            return Err("that tone is no longer in the library".to_owned());
         };
         let Some(path) = library::publish_path(&entry.hash) else {
-            return self.problem(format!("{} has no publishable artifact", entry.name));
+            return Err(format!("{} has no publishable artifact", entry.name));
         };
         let Ok(artifact) = std::fs::read(&path) else {
-            return self.problem(format!("{} could not be read", entry.name));
+            return Err(format!("{} could not be read", entry.name));
         };
         let pro_tone = library::kind(&entry.hash).as_deref() == Some("vxpreset");
         let catalog_song = !entry.meta.song.trim().is_empty();
         if catalog_song && entry.meta.artist.trim().is_empty() {
-            return self.problem(format!(
+            return Err(format!(
                 "{} names a catalog Song but has no Artist",
                 entry.name
             ));
@@ -4402,18 +4793,29 @@ impl App {
             .to_owned()
         });
         let character = library::character_key(&entry.meta.character).map(str::to_owned);
-        let publish_device = if pro_tone {
-            "StompStation PRO".to_owned()
-        } else if !self.pro_active() && !self.device.is_empty() {
-            self.device.clone()
-        } else {
-            "HX Stomp".to_owned()
-        };
-        let publish_firmware = if self.tone_kind_compatible(&entry.hash) {
-            present(&self.firmware)
-        } else {
-            None
-        };
+        // What the tone is for comes from the tone itself: the pedal it was
+        // kept from, or what its document says. Taken from the pedal plugged
+        // in, an HX Effects tone published with an HX Stomp connected (or
+        // with nothing connected) was listed as an HX Stomp one.
+        let publish_device = entry
+            .marker
+            .as_ref()
+            .map(devices::Marker::catalog_device)
+            .unwrap_or_else(|| {
+                if pro_tone {
+                    "StompStation PRO".to_owned()
+                } else {
+                    "HX Stomp".to_owned()
+                }
+            });
+        let publish_firmware = present(&entry.firmware).or_else(|| {
+            let same_pedal = self
+                .pedal()
+                .and_then(|pedal| pedal.marker())
+                .zip(entry.marker.as_ref())
+                .is_some_and(|(connected, tone)| connected == *tone);
+            same_pedal.then(|| present(&self.firmware)).flatten()
+        });
         let request = cloud::PublishRequest {
             song: cloud::PublishSong::New(cloud::CreateSongRequest {
                 creator_name: self.config.account.clone().unwrap_or_default(),
@@ -4474,19 +4876,7 @@ impl App {
                 },
             },
         };
-
-        let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(cloud::publish(&token, &request));
-            ctx.request_repaint();
-        });
-        self.status.clear();
-        self.publishing = Some(PublishingJob {
-            hash,
-            name,
-            answer: rx,
-        });
+        Ok((hash, name, request))
     }
 
     /// Collect the answer to a publish, if one has arrived.
@@ -5876,7 +6266,7 @@ impl App {
         std::mem::swap(&mut self.layout, &mut preview.layout);
 
         if let Some((name, kind, bytes)) = keeping {
-            self.keep_tone(&name, &kind, &bytes);
+            self.keep_tone(&name, &kind, &bytes, None);
         }
 
         if load {
@@ -8134,6 +8524,130 @@ mod tests {
         assert!(app.cloud_audition_blocker(&entry).is_some());
     }
 
+    /// A library row for the marker tests: a tone made for `marker`.
+    fn marked(name: &str, marker: devices::Marker, firmware: &str) -> LibEntry {
+        let pro = marker.family == devices::Family::Pro;
+        LibEntry {
+            hash: format!("{name}-hash"),
+            series: format!("{name}-series"),
+            name: name.to_owned(),
+            line: String::new(),
+            meta: library::Meta::default(),
+            added_at: String::new(),
+            modified_at: String::new(),
+            downloads: None,
+            rating: None,
+            version: 1,
+            versions: 1,
+            chain: Vec::new(),
+            pro,
+            marker: Some(marker),
+            firmware: firmware.to_owned(),
+        }
+    }
+
+    /// Every row says which pedal it is for, and a tone the pedal connected
+    /// cannot play is dashed with the reason, its pedal mark a ban.
+    #[test]
+    fn a_row_says_which_pedal_it_is_for_and_whether_this_one_plays_it() {
+        let (mut app, _events, _cmds) = app();
+        let stomp = marked("Dream Pop", devices::Marker::hx("Stomp"), "3.80");
+        let effects = marked("Pedalboard Wash", devices::Marker::hx("Effects"), "3.80");
+        let pro = marked("Velvet Drive", devices::Marker::pro("2.x"), "");
+
+        // No pedal: nothing to judge by, so every marker is solid.
+        app.connection = Connection::Offline;
+        assert!(app.fit(&pro, false).plays);
+
+        app.connection = Connection::Online;
+        app.device = "HX Stomp".into();
+        app.firmware = "3.80".into();
+        assert!(app.fit(&stomp, false).plays);
+        let fit = app.fit(&effects, false);
+        assert!(!fit.plays);
+        assert_eq!(fit.why, "The HX Stomp cannot play an HX Effects tone");
+        assert_eq!(
+            app.refusal_of(&pro).as_deref(),
+            Some("Velvet Drive is a StompStation PRO tone. The HX Stomp cannot play it.")
+        );
+
+        let cell = LibColumn::Pedal.value_cell(&effects, &fit, true);
+        let table::Cell::Marker {
+            family,
+            model,
+            solid,
+            hover,
+            ..
+        } = cell
+        else {
+            panic!("the Pedal column holds a marker");
+        };
+        assert_eq!((family, model.as_str(), solid), ("HX", "Effects", false));
+        assert!(hover.contains("cannot play"), "{hover}");
+        let table::Cell::Places(places) = LibColumn::Sync.cell(
+            &effects,
+            theme::Sync::Absent,
+            theme::Sync::Unknown,
+            true,
+            &fit,
+        ) else {
+            panic!("the first column holds the places");
+        };
+        assert_eq!(places[0].0, theme::Icon::Ban);
+        assert!(!places[0].3, "a tone the pedal cannot play is not sent");
+    }
+
+    /// Scoped to the pedal connected, the library shows what it plays: the
+    /// XL plays the Stomp's tones too, and a newer firmware's tone waits.
+    #[test]
+    fn the_library_scope_is_what_the_pedal_plays() {
+        let (mut app, _events, _cmds) = app();
+        app.connection = Connection::Online;
+        app.device = "HX Stomp".into();
+        app.firmware = "3.70".into();
+        app.library_device_filter = Some("HX Stomp".into());
+        let stomp = marked("Dream Pop", devices::Marker::hx("Stomp"), "3.70");
+        let newer = marked("Brown Lead", devices::Marker::hx("Stomp"), "3.80");
+        let xl = marked("Big Room Lead", devices::Marker::hx("Stomp XL"), "3.70");
+        let pro = marked("Velvet Drive", devices::Marker::pro("2.x"), "");
+        assert!(app.tone_in_library_scope(&stomp));
+        assert!(!app.tone_in_library_scope(&newer));
+        assert!(!app.tone_in_library_scope(&xl));
+        assert!(!app.tone_in_library_scope(&pro));
+
+        app.device = "HX Stomp XL".into();
+        app.library_device_filter = Some("HX Stomp XL".into());
+        assert!(app.tone_in_library_scope(&stomp));
+        assert!(app.tone_in_library_scope(&xl));
+
+        app.library_device_filter = None;
+        assert!(
+            app.tone_in_library_scope(&pro),
+            "all pedals shows everything"
+        );
+    }
+
+    /// Publishing says what the tone is for from the tone itself, whatever
+    /// pedal is connected: an HX Effects tone published with an HX Stomp
+    /// plugged in is an HX Effects tone, made on its own firmware.
+    #[test]
+    fn publishing_says_the_pedal_the_tone_was_kept_from() {
+        let _scratch = library::tests::Scratch::new("publish-record");
+        let (mut app, _events, _cmds) = app();
+        let (hash, _) = library::keep("Pedalboard Wash", "hxpreset", b"wash").unwrap();
+        library::attach_portable(&hash, "{\"data\":{}}").unwrap();
+        let mut entry = marked("Pedalboard Wash", devices::Marker::hx("Effects"), "3.80");
+        entry.hash = hash;
+        app.lib_entries = vec![entry];
+        app.connection = Connection::Online;
+        app.device = "HX Stomp".into();
+        app.firmware = "3.70".into();
+
+        let (_, _, request) = app.publish_request(0).unwrap();
+        assert_eq!(request.tone.tone.device_name.as_deref(), Some("HX Effects"));
+        assert_eq!(request.tone.tone.firmware_version.as_deref(), Some("3.80"));
+    }
+
     #[test]
     fn a_native_cloud_artifact_goes_to_the_temporary_audition_path() {
         let (mut app, _events, cmds) = app();
@@ -8219,6 +8733,8 @@ mod tests {
             meta: meta.clone(),
             chain: Vec::new(),
             pro: false,
+            marker: Some(devices::Marker::hx("Stomp")),
+            firmware: String::new(),
         }];
         app.library_lookup = LibraryLookup::default();
         app.library_lookup.setlist_tones.insert(
@@ -8226,6 +8742,8 @@ mod tests {
             SetlistTone {
                 held: true,
                 meta: library::Meta::default(),
+                marker: None,
+                firmware: String::new(),
             },
         );
 
