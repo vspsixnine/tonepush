@@ -1904,6 +1904,7 @@ impl App {
         let clipboard = self.clipboard.as_ref().map(|(name, _)| name.clone());
         let mut reveal = self.reveal_preset;
         let mut renaming = self.renaming.clone();
+        let mut menu_by_key = std::mem::take(&mut self.preset_menu_by_key);
         preset_list(ui, "hx-presets", empty, &rows, |ui, row| {
             let index = row.index as i64;
             if mode == RowMode::Normal {
@@ -1947,26 +1948,30 @@ impl App {
             if response.clicked() {
                 load = Some(index);
             }
-            response.context_menu(|ui| {
-                theme::menu_width(ui, 256.0);
+            let by_key = row.selected && std::mem::take(&mut menu_by_key);
+            theme::context_menu_or_key(&response, by_key, |ui| {
+                theme::menu_width(ui, 276.0);
                 theme::menu_header(
                     ui,
                     &format!("{} {}", row.slot, row.name),
                     Some("on the pedal"),
                 );
-                if theme::menu_item(ui, Some(Icon::TextCursorInput), "Rename", None).clicked() {
+                if theme::menu_keyed(ui, Some(Icon::TextCursorInput), "Rename", &["F2"], true)
+                    .clicked()
+                {
                     rename_start = Some((index, row.name.clone()));
                 }
-                if theme::menu_item(ui, Some(Icon::Copy), "Copy", None).clicked() {
+                if theme::menu_keyed(ui, Some(Icon::Copy), "Copy", &["Ctrl", "C"], true).clicked() {
                     action = Some((index, crate::RowAction::Copy));
                 }
                 match &clipboard {
                     Some(copied) => {
-                        if theme::menu_item(
+                        if theme::menu_keyed(
                             ui,
                             Some(Icon::Paste),
                             &format!("Paste {copied} here"),
-                            None,
+                            &["Ctrl", "V"],
+                            true,
                         )
                         .clicked()
                         {
@@ -1985,27 +1990,45 @@ impl App {
                 theme::menu_separator(ui);
                 match row.library {
                     theme::Sync::Differs => {
-                        if theme::menu_item(
+                        if theme::menu_keyed(
                             ui,
                             Some(Icon::Computer),
-                            "Update in library",
-                            Some("differs"),
+                            "Update in your library",
+                            &["Ctrl", "D"],
+                            true,
                         )
+                        .on_hover_text("Your library holds another tone of this name")
                         .clicked()
                         {
                             action = Some((index, crate::RowAction::Update));
                         }
                     }
                     theme::Sync::Same => {
-                        theme::menu_disabled(ui, Some(Icon::Computer), "In your library", None);
+                        theme::menu_disabled(
+                            ui,
+                            Some(Icon::Computer),
+                            "In your library",
+                            Some("as it is"),
+                        );
                     }
                     _ => {
-                        if theme::menu_item(ui, Some(Icon::Computer), "Keep in library", None)
-                            .clicked()
+                        if theme::menu_keyed(
+                            ui,
+                            Some(Icon::Computer),
+                            "Keep in your library",
+                            &["Ctrl", "D"],
+                            true,
+                        )
+                        .clicked()
                         {
                             action = Some((index, crate::RowAction::Keep));
                         }
                     }
+                }
+                if theme::menu_item(ui, Some(Icon::CloudUpload), "Publish on TonePush…", None)
+                    .clicked()
+                {
+                    action = Some((index, crate::RowAction::Publish));
                 }
                 if theme::menu_item(ui, Some(Icon::Download), "Save to file…", None).clicked() {
                     action = Some((index, crate::RowAction::Export));

@@ -162,10 +162,6 @@ pub struct Grid {
     /// The cell being typed into, and what has been typed so far.
     pub editing: Option<(usize, usize)>,
     pub draft: String,
-    /// What a right-click offers, in order. Data rather than a closure, so the
-    /// menu can be drawn inside the cell where egui wants it without the table
-    /// having to borrow the app that owns the actions.
-    pub menu: Vec<String>,
     /// Optional columns offered by right-clicking any column header. The
     /// caller-provided key is returned unchanged when visibility is toggled.
     pub column_choices: Vec<(usize, String, bool)>,
@@ -193,6 +189,10 @@ pub struct Grid {
     pub playing: Option<(usize, bool)>,
     /// Rows can be dragged out of the table.
     pub draggable: bool,
+    /// A click on a row plays it. A click on the selected row then types
+    /// into it only while that row is the one playing: a selected row that
+    /// is not playing plays again.
+    pub click_plays: bool,
 }
 
 impl Grid {
@@ -263,9 +263,11 @@ pub struct Did {
     pub sort: Option<usize>,
     /// A header context-menu choice: caller key and new visibility.
     pub column_visibility: Option<(usize, bool)>,
-    /// A right-click, and which item of the menu it ended on.
+    /// A right-click on a row: its menu is the caller's to draw.
     pub context: Option<usize>,
-    pub chose: Option<(usize, usize)>,
+    /// Where the selected row's first cell was drawn this frame, for a menu
+    /// opened from the keyboard.
+    pub selected_rect: Option<Rect>,
     /// Furthest row the virtual table actually painted this frame. Callers
     /// with paged backing data use this to prefetch shortly before the reader
     /// reaches the rows they have not loaded yet.
@@ -627,6 +629,9 @@ impl egui_table::TableDelegate for Delegate<'_> {
             self.did.last_visible = Some(self.did.last_visible.map_or(row, |last| last.max(row)));
         }
         let rect = ui.max_rect();
+        if visible && col == 0 && self.grid.selected == Some(row) {
+            self.did.selected_rect = Some(rect);
+        }
         let picked =
             self.grid.chosen.get(row).copied().unwrap_or(false) || self.grid.selected == Some(row);
         // The row under the pointer, across every column: egui_table draws
@@ -941,7 +946,8 @@ impl egui_table::TableDelegate for Delegate<'_> {
             // manager uses to rename. Nothing is lost, because the click could
             // not have changed the selection anyway.
             let editable = self.grid.columns.get(col).is_some_and(|c| c.editable);
-            if editable && self.grid.selected == Some(row) && !self.ctrl && !self.shift {
+            let quiet = !self.grid.click_plays || playing;
+            if editable && quiet && self.grid.selected == Some(row) && !self.ctrl && !self.shift {
                 self.did.edit = Some((row, col));
             } else {
                 self.did.clicked = Some((row, self.ctrl, self.shift));
@@ -952,25 +958,6 @@ impl egui_table::TableDelegate for Delegate<'_> {
         }
         if response.secondary_clicked() {
             self.did.context = Some(row);
-        }
-        if !self.grid.menu.is_empty() {
-            let items = self.grid.menu.clone();
-            response.context_menu(|ui| {
-                theme::menu_width(ui, 220.0);
-                for (n, item) in items.iter().enumerate() {
-                    // What removes something is drawn as the destructive
-                    // item, as menus here always draw it.
-                    let destructive = item.starts_with("Delete") || item.starts_with("Remove");
-                    let chosen = if destructive {
-                        theme::menu_danger(ui, Icon::Remove, item).clicked()
-                    } else {
-                        theme::menu_item(ui, None, item, None).clicked()
-                    };
-                    if chosen {
-                        self.did.chose = Some((row, n));
-                    }
-                }
-            });
         }
     }
 

@@ -257,3 +257,56 @@ Scenes: `hx-drag-tone-to-slot` (sheet 08), `hx-drag-preset-to-tones` (sheet
   before.
 - The ghost sits below and to the right of the pointer rather than above it,
   so it never covers the row the pointer is on.
+
+## Stage 8: menus and keys
+
+Every row has a menu, built in one place (`src/menus.rs`) in the sheet's
+order: hear it, put it on the pedal, keep it; then its name and versions; then
+out of this computer; delete last, alone, in red; each item with its icon and
+its key. A library tone (Play on the HX Stomp, Put in a slot…, Rename,
+Versions, Publish on TonePush…, Open on tonepush.rocks, Export…, Show in
+folder, Delete…), several (Put in slots…, Publish 3 on TonePush…, Export 3…,
+Delete 3 tones…), a setlist (Put on the HX Stomp…, Capture the pedal as v3,
+Rename, Versions, Export…, Delete…), one of its slots (Play, Send to 05A, Put
+in another slot…, Show in your tones), a TonePush tone (Play, Put in a slot…,
+Keep in your library, Versions, Open on tonepush.rocks, Copy link) and the
+pedal's presets, on the HX and the PRO, which gain their keys and Publish on
+TonePush…. A right-click chooses the row without playing it. An item a row
+cannot use stays and says why at its right ("for PRO 1.5", "no pedal", "not
+published", "after a backup"), with the sentence in full on hover.
+
+The keys work without the menu, on the list clicked last: Ctrl Enter puts the
+chosen tones in a slot (a TonePush tone is kept first), F2 renames a tone in
+its row, a setlist in its page's head or the loaded preset in the sidebar, Del
+asks to delete the chosen tones or the chosen setlist's version, Ctrl D keeps
+a TonePush tone or the loaded preset, Ctrl C and Ctrl V copy and paste the
+loaded preset, and Shift F10 opens the chosen row's menu under it. Deleting a
+setlist's version now asks first and names what stays; Export… writes a
+setlist as a folder of its tones, one file a slot, named for the slot; several
+tones export into one folder chosen once, and publish one after another,
+stopping at the first that fails. A click on the selected row types into it
+only while that row plays, so a tone put back plays again on a click.
+
+Scenes: `hx-menu-tone` (sheet 17's library tone), `hx-menu-other-pedal` (a
+PRO tone with an HX Stomp: its reasons), `hx-menu-several`, `hx-menu-setlist`,
+`hx-menu-setlist-slot`, `hx-menu-cloud`, `hx-menu-preset` (opened with Shift
+F10) and `pro-menu-preset`, at 1280 × 760. Their before is drawn from stage
+7's commit with a right-click: `before/stage7-menu-tone` (a library row's menu
+was Delete alone), `before/stage7-menu-preset`, `before/stage7-menu-setlist`
+(Remove this version, at once) and `before/stage7-menu-setlist-slot`; a
+TonePush tone had no menu. `hx-audition-keep`, `pro-read-only-keep`,
+`hx-pages` and `pro-pages` are drawn again: every menu's rows now sit 28
+points apart, as the sheets draw them, where egui's spacing added 6.
+
+- The Menu key is not reported by the windowing layer egui runs on, so Shift
+  F10 alone opens a menu from the keyboard.
+- Ctrl C and Ctrl V reach the window as copy and paste rather than as keys,
+  and a paste only when the system's clipboard holds text, so copying a preset
+  also puts its name on the clipboard: Ctrl V then works after Ctrl C.
+- Publish on TonePush… publishes at once, as the library's button did, until
+  stage 9's sheet asks first. A preset is kept in the library first and
+  published from there.
+- A TonePush tone whose versions the feed counts but does not list says "on
+  its page" beside Versions; one with a single version says "only this one".
+- A setlist's Publish on TonePush… waits for the server's setlists (S6), in
+  stage 11; the menus of your own tones on TonePush come with stages 9 and 11.

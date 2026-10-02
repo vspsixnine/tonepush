@@ -909,6 +909,8 @@ icons! {
     // Drops: publishing, and keeping the pedal as a setlist.
     CloudUpload => "cloud-upload",
     ListMusic => "list-music",
+    // A tone's address on TonePush, to copy.
+    Link => "link",
 }
 
 impl Icon {

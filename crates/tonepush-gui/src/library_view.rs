@@ -255,6 +255,20 @@ fn fitted_field(
     .inner
 }
 
+/// Give a field the keyboard with all it holds selected, so typing
+/// replaces it: a rename.
+fn select_all(ctx: &egui::Context, field: &Response, value: &str) {
+    field.request_focus();
+    let mut state = egui::TextEdit::load_state(ctx, field.id).unwrap_or_default();
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(value.chars().count()),
+        )));
+    state.store(ctx, field.id);
+}
+
 /// An inspector row typed in place.
 fn field_row(ui: &mut Ui, label: &str, value: &mut String, hint: &str) -> Response {
     ui.horizontal(|ui| {
@@ -1974,9 +1988,10 @@ impl App {
         });
         let live = self.pedal_online();
         let mut picked = None;
-        let mut remove = None;
+        let mut menu = None;
         let mut capture = false;
         let mut dragged = None;
+        self.menu_anchor = None;
         egui::ScrollArea::vertical()
             .id_salt("setlist-cards")
             .auto_shrink([false, false])
@@ -2028,19 +2043,17 @@ impl App {
                             if response.clicked() {
                                 picked = Some(index);
                             }
-                            response.context_menu(|ui| {
-                                theme::menu_width(ui, 220.0);
-                                theme::menu_header(
-                                    ui,
-                                    &setlist.name,
-                                    Some(&format!("v{}", setlist.revision())),
-                                );
-                                if theme::menu_danger(ui, Icon::Remove, "Remove this version")
-                                    .clicked()
-                                {
-                                    remove = Some(index);
-                                }
-                            });
+                            if response.secondary_clicked() {
+                                let at = ui
+                                    .ctx()
+                                    .input(|input| input.pointer.interact_pos())
+                                    .unwrap_or_else(|| response.rect.left_bottom());
+                                menu = Some((index, at));
+                            }
+                            if selected {
+                                self.menu_anchor =
+                                    Some(response.rect.left_bottom() + Vec2::new(36.0, 2.0));
+                            }
                         }
                         ui.add_space(6.0);
                         let width = ui.available_width();
@@ -2102,19 +2115,13 @@ impl App {
         }
         if let Some(index) = picked {
             self.select_setlist_entry(index);
+            self.hearing.arrows = crate::audition::Arrows::Setlists;
         }
-        if let Some(index) = remove {
-            if let Some((path, _)) = self.lib_setlists.get(index).cloned() {
-                match library::remove_setlist(&path) {
-                    Ok(()) => {
-                        if self.lib_setlist == Some(index) {
-                            self.lib_setlist = None;
-                        }
-                        self.refresh_library();
-                    }
-                    Err(why) => self.note(why),
-                }
-            }
+        // A right-click chooses the setlist and opens its menu.
+        if let Some((index, at)) = menu {
+            self.select_setlist_entry(index);
+            self.hearing.arrows = crate::audition::Arrows::Setlists;
+            self.open_row_menu(ui.ctx(), crate::menus::MenuFor::Setlist(index), at);
         }
         if capture {
             self.capture_pedal(None);
@@ -2300,7 +2307,7 @@ impl App {
                             );
                             ui.add_space(8.0);
                         }
-                        self.bank_grid(ui, &setlist, states.as_deref(), live, tier);
+                        self.bank_grid(ui, &setlist, states.as_deref(), tier);
                         ui.add_space(14.0);
                         theme::caption(ui, "Notes");
                         let notes = ui.add(
@@ -2390,6 +2397,9 @@ impl App {
                             "Name this setlist",
                             theme::semibold(theme::PRESET_NAME),
                         );
+                        if std::mem::take(&mut self.pane.rename_setlist) {
+                            select_all(ui.ctx(), &named, &self.lib_setlist_draft.name);
+                        }
                         marker(ui, found.as_ref(), plays);
                         named
                     })
@@ -2577,12 +2587,11 @@ impl App {
         ui: &mut Ui,
         setlist: &library::Setlist,
         states: Option<&[SlotState]>,
-        live: bool,
         tier: Tier,
     ) {
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 5.0;
-            self.bank_rows(ui, setlist, states, live, tier);
+            self.bank_rows(ui, setlist, states, tier);
         });
     }
 
@@ -2591,7 +2600,6 @@ impl App {
         ui: &mut Ui,
         setlist: &library::Setlist,
         states: Option<&[SlotState]>,
-        live: bool,
         tier: Tier,
     ) {
         let per_bank = if self.pro_active() {
@@ -2607,8 +2615,8 @@ impl App {
         let cell =
             ((width - label_width - gap * (per_bank as f32 - 1.0)) / per_bank as f32).floor();
         let only = self.setlist_only_differing;
-        let mut send = None;
         let mut play = None;
+        let mut menu = None;
         let mut drag_slot = None;
         let mut drop_zones = Vec::new();
         let dragging = self.dragged(ui.ctx()).is_some();
@@ -2788,29 +2796,13 @@ impl App {
                     if response.clicked() {
                         play = Some((*slot, entry.clone()));
                     }
-                    response.context_menu(|ui| {
-                        theme::menu_width(ui, 240.0);
-                        theme::menu_header(ui, &entry.name, Some(&label));
-                        if live {
-                            if theme::menu_item(
-                                ui,
-                                Some(Icon::Download),
-                                "Send this preset to its slot",
-                                None,
-                            )
-                            .clicked()
-                            {
-                                send = Some((*slot, entry.clone()));
-                            }
-                        } else {
-                            theme::menu_disabled(
-                                ui,
-                                Some(Icon::Download),
-                                "Send this preset to its slot",
-                                Some("no pedal"),
-                            );
-                        }
-                    });
+                    if response.secondary_clicked() {
+                        let at = ui
+                            .ctx()
+                            .input(|input| input.pointer.interact_pos())
+                            .unwrap_or_else(|| rect.left_bottom());
+                        menu = Some((*slot, at));
+                    }
                 }
             }
             ui.add_space(gap - ui.spacing().item_spacing.y);
@@ -2832,12 +2824,15 @@ impl App {
             self.hearing.arrows = crate::audition::Arrows::Presets;
             self.audition_setlist_slot(&setlist.name, slot as i64, &entry);
         }
-        if let Some((slot, entry)) = send {
-            if !library::holds(&entry.hash) {
-                self.note(format!("{} is missing from the library", entry.name));
-            } else {
-                self.put_to(slot as i64, vec![(entry.hash.clone(), entry.name.clone())]);
-            }
+        if let Some((slot, at)) = menu {
+            self.open_row_menu(
+                ui.ctx(),
+                crate::menus::MenuFor::SetlistSlot {
+                    setlist: setlist_index,
+                    slot,
+                },
+                at,
+            );
         }
     }
 

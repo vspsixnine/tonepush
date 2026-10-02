@@ -125,6 +125,9 @@ pub(crate) enum Arrows {
     Tones,
     /// TonePush's tones, as the Cloud draws them.
     Cloud,
+    /// The library's setlists: their keys rename and delete one; the
+    /// arrows still step through the pedal's presets.
+    Setlists,
 }
 
 /// What the deck, the board and the sidebar say while a tone is auditioned.
@@ -404,7 +407,7 @@ impl App {
     /// A library tone as a row, for one that is not a row of its own: a
     /// setlist's tone the library has let go, or an older version. What
     /// the library recorded about it says which pedal plays it.
-    fn entry_for_hash(&self, hash: &str, name: &str) -> LibEntry {
+    pub(crate) fn entry_for_hash(&self, hash: &str, name: &str) -> LibEntry {
         if let Some(entry) = self.lib_entries.iter().find(|entry| entry.hash == hash) {
             return entry.clone();
         }
@@ -809,11 +812,12 @@ impl App {
     }
 
     /// Whether a question is open that the keys belong to.
-    fn asking(&self) -> bool {
+    pub(crate) fn asking(&self) -> bool {
         self.confirm_switch.is_some()
             || self.confirm_clear.is_some()
             || self.confirm_push.is_some()
             || self.confirm_delete.is_some()
+            || self.confirm_setlist_delete.is_some()
             || self.name_clash.is_some()
             || self.put_question.is_some()
     }
@@ -1017,7 +1021,7 @@ impl App {
                         .show(ui)
                         .on_hover_text("Write the preset back exactly as it was, changes and all")
                         .clicked();
-                    if !small && self.hearing.arrows != Arrows::Presets {
+                    if !small && matches!(self.hearing.arrows, Arrows::Tones | Arrows::Cloud) {
                         ui.spacing_mut().item_spacing.x = 5.0;
                         theme::label(
                             ui,

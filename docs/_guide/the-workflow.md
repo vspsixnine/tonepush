@@ -24,7 +24,7 @@ You do not have to save to keep a tone, though. That is what the next step is fo
 
 ### 2. Keep the ones worth keeping
 
-Right-click a preset in the list and choose **Keep in library** to copy it into your library. What goes in is the device's own document, byte for byte, so the snapshots and the routing come with it. Nothing is rebuilt from what the editor happens to show, which means nothing is quietly dropped. A check beside a preset means your library holds it unchanged; an orange compare mark means your library holds a different version under that name, and the same menu offers **Update in library**.
+Right-click a preset in the list and choose **Keep in your library** (Ctrl D) to copy it into your library. What goes in is the device's own document, byte for byte, so the snapshots and the routing come with it. Nothing is rebuilt from what the editor happens to show, which means nothing is quietly dropped. A check beside a preset means your library holds it unchanged; an orange compare mark means your library holds a different version under that name, and the same menu offers **Update in your library**.
 
 Tones in your library are ordinary files in an ordinary folder. You can back them up, sync them, or read them with something else.
 
@@ -61,6 +61,34 @@ Every drag is a shortcut for something a menu or a key also does, and the ghost 
 
 While something is dragged, the presets read as destinations and the library's tabs say whether they take it, even folded. A drop that writes the pedal's memory asks first, the way putting a tone in a slot does. Esc lets go of a drag.
 
+### Right-click, or press a key
+
+Every row has a menu, and every menu has the same order: play it, put it on the pedal, keep it; then its name and versions; then what takes it out of this computer (publishing, its page on tonepush.rocks, exporting, its folder); delete last, in red. Right-click chooses a row without playing it. An item a row cannot use stays in the menu and says why at its right, such as **for PRO 2.x** beside Play for a tone the connected pedal cannot play.
+
+- **A tone in your library**: Play on the HX Stomp, Put in a slot…, Rename, Versions, Publish on TonePush…, Open on tonepush.rocks, Export…, Show in folder, Delete…. Choose several and the menu puts them in slots in a run, publishes them one after another, exports them into one folder, or deletes them.
+- **A setlist**: Put on the HX Stomp…, Capture the pedal as its next version, Rename, Versions, Export… (a folder of its tones, one file a slot, named for the slot), and Delete…, which asks and takes only that version: the other versions stay, and so do the tones it plays.
+- **One slot of a setlist**: play it, Send to 05A, Put in another slot…, and Show in your tones.
+- **A preset on the pedal**: Rename, Copy, Paste, Keep in your library, Publish on TonePush… (kept in your library first, then published from it), Save to file…, Load from file…, favourites, and Empty this slot….
+- **A tone on TonePush**: play it, Put in a slot… (kept in your library first), Keep in your library, Versions, Open on tonepush.rocks, and Copy link. Someone else's tone has nothing to rename or delete.
+
+The keys beside the items work without opening the menu, on the list you clicked last:
+
+| Key | What it does |
+|---|---|
+| Space | Play the chosen tone, or put back the one playing |
+| ↑ ↓ | Step through the list, playing each tone; on the presets, load the next one |
+| Enter | While a tone plays, keep it in the loaded slot |
+| Ctrl Enter | Put the chosen tones in a slot; while a tone plays, in another slot |
+| Esc | Put back what plays; otherwise close what is open |
+| F2 | Rename the chosen tone, setlist or loaded preset |
+| Del | Delete the chosen tones, or the chosen setlist's version, after asking |
+| Ctrl D | Keep the chosen TonePush tone, or the loaded preset, in your library |
+| Ctrl C, Ctrl V | Copy the loaded preset; paste what was copied over it |
+| Shift F10 | Open the chosen row's menu |
+| Ctrl L | Fold the library, or open it |
+| Ctrl 1, 2, 3 | Show Tones, Setlists or Cloud |
+| Ctrl F | Search the open tab |
+
 ### 3. Build a setlist
 
 Get the pedal holding the presets you want, in the order you want them, then click the computer icon at the top of the preset list (**Keep every preset on the pedal, in order, as a setlist**), or **Keep the whole pedal as a setlist** on the library's Setlists tab. That records every slot and what is in it; name it, and it opens on that tab.
@@ -73,7 +101,7 @@ The library's Setlists tab shows each setlist against what is on the pedal now: 
 
 **Put on HX Stomp…** (named after your pedal) writes the whole thing back. It asks first, and says what the write changes: the presets it replaces, the slots it empties and fills, and how many already match. It writes every slot, in order, so tick **Keep the pedal as it is now as a setlist first** if you want what is on it now as a setlist too; nothing is written until that copy is in your library. On an HX pedal the pedal as it was is also kept in its backups (see below).
 
-A click on a slot plays the setlist's version of it, wherever the pedal's own copy is, with the same bar as a click in your library: **Send to 05A** writes it back into its slot, asking first when that replaces a preset, as does **Send this preset to its slot** in the slot's menu.
+A click on a slot plays the setlist's version of it, wherever the pedal's own copy is, with the same bar as a click in your library: **Send to 05A** writes it back into its slot, asking first when that replaces a preset; the slot's menu has it too.
 
 ## Changing a setlist
 
@@ -81,7 +109,9 @@ Put it back on the pedal, edit there, keep the changed tones to your library, an
 
 A setlist is never edited in place. That looks like a limitation and is not: a setlist is a record of a rig that worked on a particular night, and a record you can edit is not a record. Renaming a tone next month should not reach backwards and change what you played in March.
 
-This is also why deleting a tone from your library never breaks a setlist. If a setlist still plays it, the tone is kept for that setlist even after it leaves your library.
+This is also why deleting a tone from your library never breaks a setlist. If a setlist still plays it, the tone is kept for that setlist even after it leaves your library. Deleting a setlist takes one version at a time, and asks first.
+
+A setlist can still grow a new version without the pedal: drop tones from your library into its slots, and TonePush saves the setlist with them as its next version, leaving the one before as it was.
 
 ## Backups
 
@@ -91,7 +121,7 @@ Every time an HX pedal connects, TonePush reads all of it, presets, impulse resp
 
 ## Publishing a Song and Tone
 
-On [TonePush](https://tonepush.rocks), a **Song** is the musical idea: either a catalog song by an Artist or an original. A **Tone** is one playable, device-native preset belonging to that Song. Publishing from the library creates the Song first and then attaches the publishable device artifact (`.hlx` for Line 6 or `.vxpreset` for StompStation PRO) as its first Tone. If adding the Tone fails, the editor says that the empty Song remains instead of pretending the two requests were one transaction. The Tone is listed for the pedal it was kept from and the firmware it was made on, whatever pedal is connected when you publish it.
+On [TonePush](https://tonepush.rocks), a **Song** is the musical idea: either a catalog song by an Artist or an original. A **Tone** is one playable, device-native preset belonging to that Song. Publishing from the library creates the Song first and then attaches the publishable device artifact (`.hlx` for Line 6 or `.vxpreset` for StompStation PRO) as its first Tone. If adding the Tone fails, the editor says that the empty Song remains instead of pretending the two requests were one transaction. Choose several tones and **Publish 3 on TonePush…** publishes them one after another, stopping at the first that fails. The Tone is listed for the pedal it was kept from and the firmware it was made on, whatever pedal is connected when you publish it.
 
 **Export for the web** writes the same information without publishing it: the
 Tone's `.hlx` or `.vxpreset`, plus a `.json` manifest with separate `song` and

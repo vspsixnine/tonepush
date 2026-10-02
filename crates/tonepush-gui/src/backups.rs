@@ -373,7 +373,7 @@ pub(crate) fn when_words(when: u64) -> String {
 }
 
 /// Open a folder in the system's file manager.
-fn show_in_folder(path: &Path) -> std::io::Result<()> {
+pub(crate) fn show_in_folder(path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let program = "open";
     #[cfg(target_os = "windows")]

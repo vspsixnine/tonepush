@@ -24,6 +24,7 @@ mod floor;
 pub mod library;
 mod library_pane;
 mod library_view;
+mod menus;
 mod pages;
 mod pane;
 mod pro;
@@ -240,6 +241,9 @@ enum CloudAction {
     /// Kept in the library, then put in this slot, asking first when that
     /// replaces something: a TonePush tone dropped on a preset.
     PutIn(i64),
+    /// Kept in the library, then on its way to a slot the presets pick:
+    /// Put in a slot… from its menu, or Ctrl Enter.
+    Put,
 }
 
 /// One cloud artifact in flight and what the click meant to do with it once it
@@ -540,6 +544,18 @@ pub struct App {
     put_question: Option<put::Asking>,
     /// Where things can be dropped this frame, and what the pointer is over.
     drops: dnd::Drops,
+    /// The row menu open, and where.
+    row_menu: Option<(menus::MenuFor, egui::Pos2)>,
+    /// Where a menu opened from the keyboard appears: under the row chosen
+    /// in the list showing.
+    menu_anchor: Option<egui::Pos2>,
+    /// Shift F10 on the pedal's presets: the loaded preset's menu opens.
+    preset_menu_by_key: bool,
+    /// A setlist's version waiting on an answer about being deleted.
+    confirm_setlist_delete: Option<usize>,
+    /// Tones waiting to be published once the one being published is
+    /// answered, by hash.
+    publish_queue: std::collections::VecDeque<String>,
     /// Where the board was drawn, for drops on it.
     board_rect: Option<egui::Rect>,
     /// Where the preset list was drawn, for a setlist dropped on it.
@@ -673,7 +689,7 @@ enum CopyTarget {
 }
 
 /// A column of the library table, and what it sorts by.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum LibColumn {
     /// Whether this tone is on the pedal. Not a column of text, and not one
     /// that can be turned off: it is the thing you act on.
@@ -1054,6 +1070,8 @@ enum RowAction {
     Export,
     Import,
     Keep,
+    /// Kept in the library, then published from it.
+    Publish,
     Remove,
 }
 
@@ -1459,6 +1477,11 @@ impl App {
             sending: None,
             put_question: None,
             drops: dnd::Drops::default(),
+            row_menu: None,
+            menu_anchor: None,
+            preset_menu_by_key: false,
+            confirm_setlist_delete: None,
+            publish_queue: std::collections::VecDeque::new(),
             board_rect: None,
             presets_rect: None,
             row_rects: std::collections::BTreeMap::new(),
@@ -1967,7 +1990,17 @@ impl eframe::App for App {
         if let Some(problem) = self.updates.take_problem() {
             self.problem(problem);
         }
-        for (name, bytes, replace) in self.pro.take_library_documents() {
+        for (name, bytes, replace, publish) in self.pro.take_library_documents() {
+            if publish && !replace {
+                // Kept as usual, then published from the library once it
+                // holds the tone: a name another tone answers to asks first.
+                let hash = library::hash_of(&bytes);
+                self.keep_tone(&name, "vxpreset", &bytes, self.pro_origin());
+                if library::meta_of(&hash).is_some() {
+                    self.publish_queue.push_back(hash);
+                }
+                continue;
+            }
             let origin = self.pro_origin();
             if replace {
                 let updated = library::named(&name)
@@ -2036,8 +2069,10 @@ impl App {
 
         let pro_active = self.pro_active();
         // An audition's keys come first: its Enter, Esc and arrows are not
-        // the pedal's.
+        // the pedal's. Then the keys beside the menus, on the list last
+        // clicked.
         self.audition_keys(&ctx, tier);
+        self.menu_keys(&ctx, tier);
         if pro_active {
             // The shared library/cloud code keys discovery and publishing off
             // these public device facts. They describe the active adapter; no
@@ -2128,11 +2163,13 @@ impl App {
         self.settle_put_after_backup();
         self.confirm_restore_window(&ctx);
         self.confirm_delete_window(&ctx);
+        self.confirm_setlist_delete_window(&ctx);
         self.name_clash_window(&ctx);
         self.save_setlist_window(&ctx);
         self.confirm_switch_window(&ctx);
         self.register_drop_zones(&ctx);
         self.settle_drop(&ctx);
+        self.row_menu_window(&ctx);
         // Over everything: the one step the app cannot work without.
         self.closing_window(&ctx);
         // The first frame is up: an update that relaunched into this version
@@ -2360,6 +2397,7 @@ impl App {
             || self.confirm_clear.is_some()
             || self.confirm_push.is_some()
             || self.confirm_delete.is_some()
+            || self.confirm_setlist_delete.is_some()
             || self.name_clash.is_some()
             || self.sending.is_some()
             || self.put_question.is_some();
@@ -2461,6 +2499,22 @@ impl App {
                     Err(why) => self.note(why),
                 }
             }
+            // Publishing goes from the library: the preset is kept first, so
+            // what is on TonePush is a tone the library knows. A name another
+            // tone answers to asks first, and publishing waits for the answer.
+            RowAction::Publish => match self.slot_document(index) {
+                Some((name, bytes)) => {
+                    let origin = self.origin();
+                    self.keep_tone(&name, "hxpreset", &bytes, origin);
+                    let hash = library::hash_of(&bytes);
+                    if library::meta_of(&hash).is_some() {
+                        self.publish_queue.push_back(hash);
+                    }
+                }
+                None => self.problem(
+                    "save the preset first, or wait for the backup, then publish it".to_owned(),
+                ),
+            },
             // The only row action that asks first, and the only one that cannot
             // be taken back.
             RowAction::Remove => self.confirm_clear = Some(index),
@@ -3936,7 +3990,9 @@ impl App {
         let id = entry.tone.summary.id;
         let purpose = match action {
             CloudAction::Audition => cloud::Purpose::Audition,
-            CloudAction::Computer | CloudAction::PutIn(_) => cloud::Purpose::Download,
+            CloudAction::Computer | CloudAction::PutIn(_) | CloudAction::Put => {
+                cloud::Purpose::Download
+            }
         };
         let tone = entry.tone.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -4026,6 +4082,14 @@ impl App {
                 let hash = library::hash_of(&bytes);
                 if library::meta_of(&hash).is_some() {
                     self.put_to(slot, vec![(hash, entry.tone.summary.name.clone())]);
+                }
+            }
+            CloudAction::Put => {
+                // Kept first, then the presets become its destinations.
+                self.apply_cloud_artifact(entry, CloudAction::Computer, bytes.clone());
+                let hash = library::hash_of(&bytes);
+                if let Some(row) = self.lib_entries.iter().position(|known| known.hash == hash) {
+                    self.start_putting(&[row]);
                 }
             }
             CloudAction::Computer => {
@@ -4422,6 +4486,20 @@ impl App {
 
         let did = table::show(ui, "cloud-library", &mut grid);
         self.apply_column_visibility(did.column_visibility);
+        self.menu_anchor = did
+            .selected_rect
+            .map(|rect| rect.left_bottom() + egui::vec2(36.0, 2.0));
+        // A right-click chooses the tone without playing it, and opens its
+        // menu.
+        if let Some(&entry) = did.context.and_then(|row| rows.get(row)) {
+            let at = ui
+                .ctx()
+                .input(|input| input.pointer.interact_pos())
+                .unwrap_or_default();
+            self.cloud_selected = Some(entry);
+            self.hearing.arrows = audition::Arrows::Cloud;
+            self.open_row_menu(ui.ctx(), menus::MenuFor::Cloud(entry), at);
+        }
         if let Some(row) = did.drag_started {
             if let Some(&entry) = rows.get(row) {
                 self.start_drag(ui.ctx(), dnd::Dragged::Cloud(entry));
@@ -4716,17 +4794,13 @@ impl App {
             // cannot act on.
             sticky: 3.min(shown.len()),
             column_choices: self.column_choices(),
-            menu: vec![if self.lib_chosen.len() > 1 {
-                format!("Delete {} tones", self.lib_chosen.len())
-            } else {
-                "Delete".to_owned()
-            }],
             nothing_yet: "No tones yet. Click",
             nothing_icon: Some(theme::Icon::Computer),
             nothing_after_icon: "beside a preset to save it.",
             row_height: library_pane::TABLE_ROW,
             header_height: library_pane::TABLE_HEADER,
             draggable: true,
+            click_plays: true,
             ..Default::default()
         };
         for &i in &rows {
@@ -4827,6 +4901,27 @@ impl App {
 
         let did = table::show(ui, "library", &mut grid);
         self.apply_column_visibility(did.column_visibility);
+        self.menu_anchor = did
+            .selected_rect
+            .map(|rect| rect.left_bottom() + egui::vec2(36.0, 2.0));
+        // A right-click chooses the row without playing it, or keeps the
+        // choice it is part of, and opens its menu.
+        if let Some(row) = did.context {
+            let at = ui
+                .ctx()
+                .input(|input| input.pointer.interact_pos())
+                .unwrap_or_default();
+            let entry = rows[row];
+            let hash = self.lib_entries[entry].hash.clone();
+            if !self.lib_chosen.contains(&hash) {
+                self.lib_chosen = [hash].into_iter().collect();
+                self.lib_anchor = Some(entry);
+            }
+            self.select_lib_entry(entry);
+            self.hearing.arrows = audition::Arrows::Tones;
+            let chosen = self.put_rows(entry);
+            self.open_row_menu(ui.ctx(), menus::MenuFor::Tones(chosen), at);
+        }
         if let Some(row) = did.drag_started {
             let dragged = self.dragged_tones(rows[row]);
             self.start_drag(ui.ctx(), dragged);
@@ -4887,9 +4982,6 @@ impl App {
                     }
                 }
             }
-        }
-        if did.chose.is_some() {
-            self.ask_to_delete();
         }
     }
 
@@ -5260,6 +5352,14 @@ impl App {
     /// Collect the answer to a publish, if one has arrived.
     fn settle_publishing(&mut self, ctx: &egui::Context) {
         let Some(publishing) = &self.publishing else {
+            // The next tone waiting, if any; a queue that cannot start (no
+            // sign-in) is not tried again tone after tone.
+            if let Some(next) = self.publish_queue.pop_front() {
+                self.publish_hash(&next, ctx);
+                if self.publishing.is_none() {
+                    self.publish_queue.clear();
+                }
+            }
             return;
         };
         let hash = publishing.hash.clone();
@@ -5293,7 +5393,11 @@ impl App {
                 self.note(format!("{} is published as a Tone", tone.summary.name));
                 self.start_cloud_check();
             }
-            Err(why) => self.problem(why.to_string()),
+            Err(why) => {
+                // The ones waiting are not published on top of a failure.
+                self.publish_queue.clear();
+                self.problem(why.to_string());
+            }
         }
     }
 
@@ -5505,8 +5609,31 @@ impl App {
     /// native documents are converted to `.hlx`; a PRO `.vxpreset` is already
     /// the lossless publishable form.
     fn export_for_the_web(&mut self, index: usize) {
-        let Some(entry) = self.lib_entries.get(index).cloned() else {
+        let Some(entry) = self.lib_entries.get(index) else {
             return;
+        };
+        let pro_tone = library::kind(&entry.hash).as_deref() == Some("vxpreset");
+        if !pro_tone && self.catalog.is_none() {
+            self.note("exporting this HX tone needs HX Edit's model data first".into());
+            return;
+        }
+        let Some(dir) = rfd::FileDialog::new()
+            .set_title("Where to put the tone")
+            .pick_folder()
+        else {
+            return;
+        };
+        if self.export_for_the_web_to(index, &dir) {
+            let name = self.lib_entries[index].name.clone();
+            self.note(format!("exported {name} to {}", dir.display()));
+        }
+    }
+
+    /// Write one library tone's two files into `dir`. Answers whether both
+    /// were written; what went wrong is said.
+    fn export_for_the_web_to(&mut self, index: usize, dir: &std::path::Path) -> bool {
+        let Some(entry) = self.lib_entries.get(index).cloned() else {
+            return false;
         };
         let pro_tone = library::kind(&entry.hash).as_deref() == Some("vxpreset");
         let catalog = if pro_tone {
@@ -5514,20 +5641,15 @@ impl App {
         } else {
             let Some(catalog) = self.catalog.as_ref() else {
                 self.note("exporting this HX tone needs HX Edit's model data first".into());
-                return;
+                return false;
             };
             Some(catalog)
-        };
-        let Some(dir) = rfd::FileDialog::new()
-            .set_title("Where to put the tone")
-            .pick_folder()
-        else {
-            return;
         };
 
         let stem = sanitise(&entry.name);
         let Some(document) = library::read(&entry.hash) else {
-            return self.note(format!("{} is missing from the library", entry.name));
+            self.note(format!("{} is missing from the library", entry.name));
+            return false;
         };
         // A library tone is a device document; the site wants the symbolic
         // form. A tone kept as .hlx already is passed through untouched.
@@ -5544,26 +5666,34 @@ impl App {
                 )
                 .to_pretty_string()
                 .into_bytes(),
-                None => return self.note(format!("{} is not a readable preset", entry.name)),
+                None => {
+                    self.note(format!("{} is not a readable preset", entry.name));
+                    return false;
+                }
             }
         };
 
         let details = dir.join(format!("{stem}.json"));
         let json = match serde_json::to_vec_pretty(&entry.meta.for_the_web(&entry.name)) {
             Ok(json) => json,
-            Err(error) => return self.note(format!("could not encode the tone details: {error}")),
+            Err(error) => {
+                self.note(format!("could not encode the tone details: {error}"));
+                return false;
+            }
         };
         let tone = dir.join(format!(
             "{stem}.{}",
             if pro_tone { "vxpreset" } else { "hlx" }
         ));
         if let Err(e) = library::atomic_write(&tone, artifact) {
-            return self.note(format!("could not write {}: {e}", tone.display()));
+            self.note(format!("could not write {}: {e}", tone.display()));
+            return false;
         }
         if let Err(e) = library::atomic_write(&details, json) {
-            return self.note(format!("could not write {}: {e}", details.display()));
+            self.note(format!("could not write {}: {e}", details.display()));
+            return false;
         }
-        self.note(format!("exported {} to {}", entry.name, dir.display()));
+        true
     }
 
     /// The numbers under the curve, one group per handle.

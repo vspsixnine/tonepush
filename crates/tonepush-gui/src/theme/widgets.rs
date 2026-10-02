@@ -1590,10 +1590,12 @@ pub fn dialog_footer<R>(ui: &mut Ui, note: &str, actions: impl FnOnce(&mut Ui) -
 // ---------------------------------------------------------------------------
 // Menus
 
-/// The width every menu row fills.
+/// The width every menu row fills. Rows sit edge to edge, 28 points
+/// apart, as the design draws them; separators make the groups.
 pub fn menu_width(ui: &mut Ui, width: f32) {
     ui.set_min_width(width);
     ui.set_max_width(width);
+    ui.spacing_mut().item_spacing.y = 0.0;
 }
 
 /// A menu's header: what it acts on, and a quieter aside.
@@ -1694,6 +1696,88 @@ pub fn menu_keyed(
         );
     }
     response
+}
+
+/// A row that opens a submenu at its side: an icon, the label and a
+/// chevron. The submenu's rows are drawn by `content`; answers what it
+/// answered while open.
+pub fn menu_submenu<R>(
+    ui: &mut Ui,
+    icon: Icon,
+    text_: &str,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let width = ui.available_width().max(160.0);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
+    let open = egui::containers::menu::MenuState::from_ui(ui, |state, _| {
+        state.open_item
+            == Some(egui::containers::menu::SubMenu::id_from_widget_id(
+                response.id,
+            ))
+    });
+    if ui.is_rect_visible(rect) {
+        if open || response.hovered() {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(6), hover());
+        }
+        paint_icon(
+            ui,
+            icon,
+            Pos2::new(rect.left() + 17.5, rect.center().y),
+            15.0,
+            text_soft(),
+        );
+        let galley = layout(ui, text_, regular(BODY), text());
+        centred_galley(ui, galley, rect.left() + 35.0, rect.center().y);
+        paint_icon(
+            ui,
+            Icon::ChevronRight,
+            Pos2::new(rect.right() - 17.0, rect.center().y),
+            14.0,
+            muted(),
+        );
+    }
+    egui::containers::menu::SubMenu::new()
+        .show(ui, &response, content)
+        .map(|shown| shown.inner)
+}
+
+/// A row's right-click menu that the keyboard opens too (Shift F10):
+/// at the pointer for a right-click, under the row's start for a key. A
+/// plain click on the row closes it, as a context menu's does.
+pub fn context_menu_or_key(response: &Response, by_key: bool, content: impl FnOnce(&mut Ui)) {
+    let ctx = &response.ctx;
+    let id = egui::Popup::default_response_id(response);
+    let at_id = id.with("at");
+    if response.secondary_clicked() || by_key {
+        let at = if by_key {
+            response.rect.left_bottom() + Vec2::new(28.0, 2.0)
+        } else {
+            ctx.input(|input| input.pointer.interact_pos())
+                .unwrap_or_else(|| response.rect.left_bottom())
+        };
+        ctx.data_mut(|data| data.insert_temp(at_id, at));
+        egui::Popup::open_id(ctx, id);
+    } else if response.clicked() {
+        egui::Popup::close_id(ctx, id);
+    }
+    if !egui::Popup::is_id_open(ctx, id) {
+        return;
+    }
+    let Some(at) = ctx.data(|data| data.get_temp::<Pos2>(at_id)) else {
+        return;
+    };
+    let _ = egui::Popup::new(
+        id,
+        ctx.clone(),
+        egui::PopupAnchor::Position(at),
+        response.layer_id,
+    )
+    .kind(egui::PopupKind::Menu)
+    .layout(egui::Layout::top_down_justified(egui::Align::Min))
+    .style(egui::containers::menu::menu_style)
+    .open_memory(None)
+    .show(content);
 }
 
 /// A few quiet sentences at the foot of a menu, saying what its choices do.

@@ -65,6 +65,9 @@ pub(crate) struct PaneState {
     pub details: bool,
     /// Put the keyboard in the open tab's search on the next frame.
     pub focus_search: bool,
+    /// Put the keyboard in the chosen setlist's name, all of it selected,
+    /// on the next frame it is drawn: F2, or Rename in its menu.
+    pub rename_setlist: bool,
     /// Everyone's tones, or yours.
     pub cloud_scope: CloudScope,
 }

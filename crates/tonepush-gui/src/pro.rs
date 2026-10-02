@@ -311,7 +311,13 @@ pub(crate) struct Panel {
     renaming_header: Option<String>,
     clipboard: Option<(String, Vec<u8>)>,
     preset_hashes: BTreeMap<usize, String>,
-    library_documents: Vec<(String, Vec<u8>, bool)>,
+    /// Presets read for the library: name, bytes, whether they replace the
+    /// tone of that name, and whether they are published once kept.
+    library_documents: Vec<(String, Vec<u8>, bool, bool)>,
+    /// Presets being read to be published, by slot.
+    publish_reads: std::collections::BTreeSet<usize>,
+    /// Shift F10 on the presets: the loaded preset's menu opens.
+    pub(crate) menu_by_key: bool,
     captured_setlists: Vec<Vec<(String, Option<Vec<u8>>)>>,
     /// The sidebar asked to keep the whole pedal as a setlist.
     capture_asked: bool,
@@ -416,6 +422,8 @@ impl Panel {
             clipboard: None,
             preset_hashes: BTreeMap::new(),
             library_documents: Vec::new(),
+            publish_reads: std::collections::BTreeSet::new(),
+            menu_by_key: false,
             captured_setlists: Vec::new(),
             capture_asked: false,
             audition_events: Vec::new(),
@@ -531,7 +539,8 @@ impl Panel {
                     self.preset_hashes.insert(index, slot_hash(&bytes));
                     match target {
                         ReadTarget::Library { replace } => {
-                            self.library_documents.push((name, bytes, replace));
+                            let publish = self.publish_reads.remove(&index);
+                            self.library_documents.push((name, bytes, replace, publish));
                         }
                         ReadTarget::Clipboard => {
                             self.status = format!("Copied {name}");
@@ -807,7 +816,7 @@ impl Panel {
             .unwrap_or("")
     }
 
-    pub(crate) fn take_library_documents(&mut self) -> Vec<(String, Vec<u8>, bool)> {
+    pub(crate) fn take_library_documents(&mut self) -> Vec<(String, Vec<u8>, bool, bool)> {
         std::mem::take(&mut self.library_documents)
     }
 
@@ -1059,6 +1068,63 @@ impl Panel {
             if let Some(index) = active_preset_index(snapshot) {
                 let _ = self.tx.send(Cmd::SelectPreset(index));
             }
+        }
+    }
+
+    /// The presets' keys on the loaded preset, as its menu offers them:
+    /// Ctrl C copies, Ctrl D keeps it in the library, F2 renames and Ctrl V
+    /// pastes once a backup guards saving, and Shift F10 opens its menu.
+    pub(crate) fn preset_keys(&mut self, ctx: &egui::Context, lookup: &crate::LibraryLookup) {
+        if !self.online || self.confirmation.is_some() || self.hearing.is_some() {
+            return;
+        }
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return;
+        };
+        let Some(index) = active_preset_index(snapshot) else {
+            return;
+        };
+        let name = snapshot.active_preset.clone().unwrap_or_default();
+        use egui::{Key, Modifiers};
+        let (copied, pasted) = crate::menus::clipboard_events(ctx);
+        let consume = |modifiers: Modifiers, key: Key| {
+            ctx.input_mut(|input| input.consume_key(modifiers, key))
+        };
+        let guarded = self.rollback.is_some() && self.read_only.is_none();
+        if copied || consume(Modifiers::COMMAND, Key::C) {
+            // The name goes on the system's clipboard too, so Ctrl V reaches
+            // the window with something to paste.
+            ctx.copy_text(name);
+            let _ = self.tx.send(Cmd::ReadPreset {
+                index,
+                target: ReadTarget::Clipboard,
+            });
+        } else if pasted || consume(Modifiers::COMMAND, Key::V) {
+            match self.clipboard.clone() {
+                Some((name, bytes)) if guarded => {
+                    let _ = self.tx.send(Cmd::ImportBytes { index, name, bytes });
+                }
+                Some(_) => self.status = self.write_refusal().unwrap_or_default(),
+                None => {}
+            }
+        } else if consume(Modifiers::NONE, Key::F2) {
+            if guarded {
+                self.renaming_preset = Some((index, name));
+            } else {
+                self.status = self.write_refusal().unwrap_or_default();
+            }
+        } else if consume(Modifiers::COMMAND, Key::D) {
+            let replace = match self.slot_sync(index, lookup) {
+                theme::Sync::Same => return,
+                theme::Sync::Differs => true,
+                _ => false,
+            };
+            let _ = self.tx.send(Cmd::ReadPreset {
+                index,
+                target: ReadTarget::Library { replace },
+            });
+        } else if consume(Modifiers::SHIFT, Key::F10) {
+            self.menu_by_key = true;
         }
     }
 

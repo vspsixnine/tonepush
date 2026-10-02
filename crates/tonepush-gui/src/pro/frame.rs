@@ -210,7 +210,9 @@ impl Panel {
         let mut paste = None;
         let mut export = None;
         let mut import = None;
+        let mut publish = None;
         let mut row_rects = BTreeMap::new();
+        let mut menu_by_key = std::mem::take(&mut self.menu_by_key);
         shell::preset_list(ui, "pro-presets", empty, &rows, |ui, row| {
             let index = row.index;
             if mode == RowMode::Normal {
@@ -259,31 +261,37 @@ impl Panel {
                     select = Some(index);
                 }
             }
-            response.context_menu(|ui| {
-                theme::menu_width(ui, 256.0);
+            let by_key = row.selected && std::mem::take(&mut menu_by_key);
+            theme::context_menu_or_key(&response, by_key, |ui| {
+                theme::menu_width(ui, 276.0);
                 theme::menu_header(
                     ui,
                     &format!("{} {}", row.slot, row.name),
                     Some("on the pedal"),
                 );
-                let guarded_item = |ui: &mut Ui, icon: Icon, text: &str| {
+                let guarded_item = |ui: &mut Ui, icon: Icon, text: &str, keys: &[&str]| {
                     if guarded {
-                        theme::menu_item(ui, Some(icon), text, None).clicked()
+                        theme::menu_keyed(ui, Some(icon), text, keys, true).clicked()
                     } else {
                         theme::menu_disabled(ui, Some(icon), text, Some("after a backup"))
                             .on_hover_text(&refusal);
                         false
                     }
                 };
-                if guarded_item(ui, Icon::TextCursorInput, "Rename") {
+                if guarded_item(ui, Icon::TextCursorInput, "Rename", &["F2"]) {
                     rename_start = Some(Some((index, row.name.clone())));
                 }
-                if theme::menu_item(ui, Some(Icon::Copy), "Copy", None).clicked() {
+                if theme::menu_keyed(ui, Some(Icon::Copy), "Copy", &["Ctrl", "C"], true).clicked() {
                     copy = Some(index);
                 }
                 match &clipboard {
                     Some(copied) => {
-                        if guarded_item(ui, Icon::Paste, &format!("Paste {copied} here")) {
+                        if guarded_item(
+                            ui,
+                            Icon::Paste,
+                            &format!("Paste {copied} here"),
+                            &["Ctrl", "V"],
+                        ) {
                             paste = Some(index);
                         }
                     }
@@ -299,42 +307,60 @@ impl Panel {
                 theme::menu_separator(ui);
                 match row.library {
                     theme::Sync::Same => {
-                        theme::menu_disabled(ui, Some(Icon::Computer), "In your library", None);
-                    }
-                    theme::Sync::Differs => {
-                        if theme::menu_item(
+                        theme::menu_disabled(
                             ui,
                             Some(Icon::Computer),
-                            "Update in library",
-                            Some("differs"),
+                            "In your library",
+                            Some("as it is"),
+                        );
+                    }
+                    theme::Sync::Differs => {
+                        if theme::menu_keyed(
+                            ui,
+                            Some(Icon::Computer),
+                            "Update in your library",
+                            &["Ctrl", "D"],
+                            true,
                         )
+                        .on_hover_text("Your library holds another tone of this name")
                         .clicked()
                         {
                             read = Some((index, true));
                         }
                     }
                     _ => {
-                        if theme::menu_item(ui, Some(Icon::Computer), "Keep in library", None)
-                            .clicked()
+                        if theme::menu_keyed(
+                            ui,
+                            Some(Icon::Computer),
+                            "Keep in your library",
+                            &["Ctrl", "D"],
+                            true,
+                        )
+                        .clicked()
                         {
                             read = Some((index, false));
                         }
                     }
                 }
+                if theme::menu_item(ui, Some(Icon::CloudUpload), "Publish on TonePush…", None)
+                    .clicked()
+                {
+                    publish = Some(index);
+                }
                 if theme::menu_item(ui, Some(Icon::Download), "Save to file…", None).clicked() {
                     export = Some((index, row.name.clone()));
                 }
-                if guarded_item(ui, Icon::Upload, "Load from file…") {
+                if guarded_item(ui, Icon::Upload, "Load from file…", &[]) {
                     import = Some(index);
                 }
-                if index > 0 && guarded_item(ui, Icon::ChevronUp, "Move up") {
+                if index > 0 && guarded_item(ui, Icon::ChevronUp, "Move up", &[]) {
                     command = Some(Cmd::Move {
                         library: Library::Presets,
                         from: index,
                         to: index - 1,
                     });
                 }
-                if index + 1 < count && guarded_item(ui, Icon::ChevronDown, "Move down") {
+                if index + 1 < count && guarded_item(ui, Icon::ChevronDown, "Move down", &[]) {
                     command = Some(Cmd::Move {
                         library: Library::Presets,
                         from: index,
@@ -397,6 +423,15 @@ impl Panel {
             let _ = self.tx.send(Cmd::ReadPreset {
                 index,
                 target: ReadTarget::Clipboard,
+            });
+        }
+        // Published from the library: read, kept, then published once the
+        // library holds it.
+        if let Some(index) = publish {
+            self.publish_reads.insert(index);
+            let _ = self.tx.send(Cmd::ReadPreset {
+                index,
+                target: ReadTarget::Library { replace: false },
             });
         }
         if let Some(index) = paste {

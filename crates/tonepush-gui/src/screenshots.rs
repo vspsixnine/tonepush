@@ -140,10 +140,26 @@ enum Scene {
     HxDragSeveral,
     /// A setlist dragged over the presets.
     HxDragSetlist,
+    /// Dream Pop right-clicked: chosen without playing, its menu open.
+    HxMenuTone,
+    /// Glass Wall, a StompStation PRO tone, right-clicked with an HX Stomp.
+    HxMenuOther,
+    /// Three tones chosen, their menu open.
+    HxMenuSeveral,
+    /// Album release show's menu.
+    HxMenuSetlist,
+    /// One slot of Album release show, its menu open.
+    HxMenuSlot,
+    /// Glass Cathedral's menu, in the Cloud.
+    HxMenuCloud,
+    /// The loaded preset's menu, opened with Shift F10.
+    HxMenuPreset,
+    /// The StompStation PRO's loaded preset's menu.
+    ProMenuPreset,
 }
 
 impl Scene {
-    const ALL: [Scene; 51] = [
+    const ALL: [Scene; 59] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -195,6 +211,14 @@ impl Scene {
         Scene::HxDragCloudToSlot,
         Scene::HxDragSeveral,
         Scene::HxDragSetlist,
+        Scene::HxMenuTone,
+        Scene::HxMenuOther,
+        Scene::HxMenuSeveral,
+        Scene::HxMenuSetlist,
+        Scene::HxMenuSlot,
+        Scene::HxMenuCloud,
+        Scene::HxMenuPreset,
+        Scene::ProMenuPreset,
     ];
 
     fn name(self) -> &'static str {
@@ -250,6 +274,14 @@ impl Scene {
             Scene::HxDragCloudToSlot => "hx-drag-cloud-to-slot",
             Scene::HxDragSeveral => "hx-drag-several",
             Scene::HxDragSetlist => "hx-drag-setlist",
+            Scene::HxMenuTone => "hx-menu-tone",
+            Scene::HxMenuOther => "hx-menu-other-pedal",
+            Scene::HxMenuSeveral => "hx-menu-several",
+            Scene::HxMenuSetlist => "hx-menu-setlist",
+            Scene::HxMenuSlot => "hx-menu-setlist-slot",
+            Scene::HxMenuCloud => "hx-menu-cloud",
+            Scene::HxMenuPreset => "hx-menu-preset",
+            Scene::ProMenuPreset => "pro-menu-preset",
         }
     }
 
@@ -264,6 +296,25 @@ impl Scene {
             Scene::HxDragPresetToTones => Some(Dragged::Preset(5)),
             Scene::HxDragCloudToSlot => Some(Dragged::Cloud(0)),
             Scene::HxDragSetlist => Some(Dragged::Setlist(0)),
+            _ => None,
+        }
+    }
+
+    /// The row menu a menu scene opens, once the row it belongs to is drawn.
+    fn row_menu(self, app: &App) -> Option<crate::menus::MenuFor> {
+        use crate::menus::MenuFor;
+        match self {
+            Scene::HxMenuTone => Some(MenuFor::Tones(vec![tone_named(app, "Dream Pop")])),
+            Scene::HxMenuOther => Some(MenuFor::Tones(vec![tone_named(app, "Glass Wall")])),
+            Scene::HxMenuSeveral => {
+                Some(MenuFor::Tones(app.put_rows(tone_named(app, "Dream Pop"))))
+            }
+            Scene::HxMenuSetlist => Some(MenuFor::Setlist(0)),
+            Scene::HxMenuSlot => Some(MenuFor::SetlistSlot {
+                setlist: 0,
+                slot: 4,
+            }),
+            Scene::HxMenuCloud => Some(MenuFor::Cloud(0)),
             _ => None,
         }
     }
@@ -553,6 +604,43 @@ impl Scene {
                 app.lib_showing = crate::LibraryView::Cloud;
                 app.cloud_selected = Some(0);
             }
+            Scene::HxMenuTone | Scene::HxMenuOther | Scene::HxMenuSeveral => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                let name = if self == Scene::HxMenuOther {
+                    "Glass Wall"
+                } else {
+                    "Dream Pop"
+                };
+                let index = tone_named(app, name);
+                app.choose_tone(index);
+                app.lib_reveal = true;
+                if self == Scene::HxMenuSeveral {
+                    app.lib_chosen = ["Dream Pop", "Slapback Twang", "Surf Spring"]
+                        .iter()
+                        .map(|name| app.lib_entries[tone_named(app, name)].hash.clone())
+                        .collect();
+                }
+            }
+            Scene::HxMenuSetlist | Scene::HxMenuSlot => {
+                hx_stomp(app);
+                app.lib_showing = crate::LibraryView::Setlists;
+                app.select_setlist_entry(0);
+                app.hearing.arrows = crate::audition::Arrows::Setlists;
+                tall_pane(app);
+            }
+            Scene::HxMenuCloud => {
+                hx_stomp(app);
+                cloud_feed(app);
+                app.lib_showing = crate::LibraryView::Cloud;
+                app.cloud_selected = Some(0);
+                app.hearing.arrows = crate::audition::Arrows::Cloud;
+            }
+            Scene::HxMenuPreset => {
+                hx_stomp(app);
+                app.clipboard = Some(("Chime Clean".to_owned(), vec![0; 4]));
+            }
+            Scene::ProMenuPreset => pro(app),
             Scene::HxDragSetlist => {
                 hx_stomp(app);
                 app.lib_showing = crate::LibraryView::Setlists;
@@ -1088,6 +1176,8 @@ struct Demo {
     scene: Scene,
     appearance: theme::Appearance,
     app: Option<App>,
+    /// Frames drawn, for a menu that opens once its row has been drawn.
+    frames: usize,
 }
 
 impl Demo {
@@ -1122,6 +1212,24 @@ impl Demo {
         }
         if matches!(self.scene, Scene::HxAuditionKeep | Scene::ProReadOnlyKeep) {
             egui::Popup::open_id(ui.ctx(), crate::audition::keep_menu());
+        }
+        self.frames += 1;
+        if let Some(what) = self.scene.row_menu(app) {
+            if self.frames > 3 && app.row_menu.is_none() {
+                // Under the row, where Shift F10 opens it; a slot of a
+                // setlist has no keyboard of its own, so where it is drawn.
+                let at = match self.scene {
+                    Scene::HxMenuSlot => egui::pos2(900.0, 708.0),
+                    _ => app.menu_anchor.unwrap_or(egui::pos2(400.0, 600.0)),
+                };
+                app.open_row_menu(ui.ctx(), what, at);
+            }
+        }
+        if self.scene == Scene::HxMenuPreset {
+            app.preset_menu_by_key = true;
+        }
+        if self.scene == Scene::ProMenuPreset {
+            app.pro.menu_by_key = true;
         }
         app.draw(&mut root);
     }
@@ -1226,6 +1334,7 @@ fn screenshots() {
                             scene,
                             appearance,
                             app: None,
+                            frames: 0,
                         },
                     );
                 // Fonts and styles installed on the first frame apply from
