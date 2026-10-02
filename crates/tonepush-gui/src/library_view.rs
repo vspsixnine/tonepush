@@ -958,7 +958,7 @@ impl App {
             (self.preset_index >= 0).then_some(self.preset_index)
         };
         // The pedal.
-        let sending = self.sending.as_ref().is_some_and(|s| s.hash == entry.hash);
+        let sending = self.sending.as_ref().is_some_and(|s| s.holds(&entry.hash));
         let heard = self.hears(&crate::audition::Source::Library(entry.hash.clone()));
         let set_aside = self.hearing.set_aside.clone().unwrap_or_default();
         if heard && !sending {
@@ -1170,6 +1170,47 @@ impl App {
     /// The selected tone: its name, chain and whereabouts, its song and tone
     /// details typed in place, its versions, and publishing and export.
     fn tone_inspector(&mut self, ui: &mut Ui) {
+        // Several chosen: what they are, and putting them in slots.
+        if self.lib_chosen.len() > 1 {
+            let names: Vec<String> = self
+                .lib_order
+                .iter()
+                .filter_map(|&row| self.lib_entries.get(row))
+                .filter(|entry| self.lib_chosen.contains(&entry.hash))
+                .map(|entry| entry.name.clone())
+                .collect();
+            let first = self.lib_order.iter().copied().find(|&row| {
+                self.lib_entries
+                    .get(row)
+                    .is_some_and(|entry| self.lib_chosen.contains(&entry.hash))
+            });
+            ui.spacing_mut().item_spacing.y = 4.0;
+            let title = format!("{} tones chosen", self.lib_chosen.len());
+            let galley = shell::title_galley(ui, &title, 15.0, theme::text(), ui.available_width());
+            let (place, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::hover());
+            shell::paint_line(ui, galley, place.left(), place.center().y);
+            theme::label_truncated(ui, &names.join(", "), theme::regular(12.0), theme::muted());
+            ui.add_space(8.0);
+            rule(ui);
+            let refusal = self.put_refusal();
+            let words = refusal.clone().map_or_else(
+                || "In order, one slot each".to_owned(),
+                |why| format!("Putting them in slots {why}"),
+            );
+            if where_row(
+                ui,
+                Icon::Pedal,
+                theme::muted(),
+                &[(&words, Words::Soft)],
+                refusal.is_none().then_some("Put in slots…"),
+            ) {
+                if let Some(first) = first {
+                    self.start_sending(first);
+                }
+            }
+            return;
+        }
         let Some(i) = self.lib_selected.filter(|i| *i < self.lib_entries.len()) else {
             // The loaded preset, not kept yet: the one thing to do with it.
             if self.pedal_online() && !self.pro_active() && self.preset_index >= 0 {

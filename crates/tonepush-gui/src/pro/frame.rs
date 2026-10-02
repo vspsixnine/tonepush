@@ -96,6 +96,7 @@ impl Panel {
                             .as_ref()
                             .map_or(self.dirty, |shown| shown.set_aside_dirty),
                     heard: selected && self.hearing.is_some(),
+                    target: self.put_targets.contains(&index),
                     favourite: config.is_favorite(FAVORITES_SETLIST, index as i64),
                     library: if name.is_some() {
                         self.slot_sync(index, lookup)
@@ -200,6 +201,7 @@ impl Panel {
         let mut paste = None;
         let mut export = None;
         let mut import = None;
+        let mut row_rects = BTreeMap::new();
         shell::preset_list(ui, "pro-presets", empty, &rows, |ui, row| {
             let index = row.index;
             if mode == RowMode::Normal {
@@ -223,6 +225,7 @@ impl Panel {
                 }
             }
             let response = shell::preset_row(ui, row, mode);
+            row_rects.insert(index, response.rect);
             if mode == RowMode::Sending {
                 if response.clicked() {
                     picked = Some(Picked::Slot(index));
@@ -354,6 +357,7 @@ impl Panel {
                 }
             });
         });
+        self.row_rects = row_rects;
         match rename_start {
             Some(started) => self.renaming_preset = started,
             None => self.renaming_preset = renaming,
@@ -796,6 +800,21 @@ impl Panel {
                             }
                         }
                         let parts = match &hearing {
+                            // On firmware TonePush only plays, that is the
+                            // second thing the deck says.
+                            Some(shown) if self.read_only.is_some() => {
+                                let mut parts = shown.state(tier);
+                                parts.truncate(1);
+                                let version = snapshot
+                                    .as_ref()
+                                    .map(|snapshot| snapshot.identity.version.clone())
+                                    .unwrap_or_default();
+                                parts.push(State::Warning(
+                                    Icon::Lock,
+                                    format!("Read only on firmware {version}"),
+                                ));
+                                parts
+                            }
                             Some(shown) => shown.state(tier),
                             None => self.state(tier),
                         };

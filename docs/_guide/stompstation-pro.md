@@ -114,7 +114,9 @@ The library under the editor is the same one used with an HX pedal:
   and a chain summary. A click plays a tone in the loaded preset's place until
   you keep it or put it back.
 - **Setlists** captures all 60 PRO slots in order. A setlist can be restored as
-  a whole, or one tone can be sent back to one chosen slot.
+  a whole, or tones can be put back in chosen slots: a slot that holds a
+  preset asks first, and without a checked backup the question offers to take
+  one before it writes.
 - **Cloud** searches compatible StompStation PRO tones, downloads them into the
   local library, auditions them in the live edit buffer, and publishes native
   `.vxpreset` artifacts with the same Song/Tone metadata workflow.

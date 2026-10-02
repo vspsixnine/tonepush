@@ -388,22 +388,30 @@ impl App {
         let Some(heard) = self.heard_playing().cloned() else {
             return;
         };
-        match heard.source {
-            Source::Library(hash) => {
-                if let Some(row) = self.lib_entries.iter().position(|entry| entry.hash == hash) {
-                    self.start_sending(row);
-                }
-            }
-            Source::TonePush(key) => {
-                // Into the library first, so the slot is written from it.
-                if let Some(hash) = self.keep_cloud_heard(key) {
-                    if let Some(row) = self.lib_entries.iter().position(|entry| entry.hash == hash)
-                    {
-                        self.start_sending(row);
-                    }
-                }
-            }
+        if self.elsewhere_refusal().is_some() {
+            return;
         }
+        let hash = match heard.source {
+            Source::Library(hash) => Some(hash),
+            // Into the library first, so the slot is written from it.
+            Source::TonePush(key) => self.keep_cloud_heard(key),
+        };
+        if let Some(row) =
+            hash.and_then(|hash| self.lib_entries.iter().position(|entry| entry.hash == hash))
+        {
+            self.start_putting(&[row]);
+        }
+    }
+
+    /// Why Keep's "In another slot…" cannot be offered now, in the menu's
+    /// few words: firmware TonePush only plays, or a PRO with no checked
+    /// backup yet.
+    pub(crate) fn elsewhere_refusal(&self) -> Option<String> {
+        if let Some(why) = self.put_refusal() {
+            return Some(why);
+        }
+        self.put_needs_backup()
+            .then(|| "waits for a backup".to_owned())
     }
 
     /// Keep the TonePush tone heard under this key in the library, from the
@@ -553,6 +561,7 @@ impl App {
             || self.confirm_push.is_some()
             || self.confirm_delete.is_some()
             || self.name_clash.is_some()
+            || self.put_question.is_some()
     }
 
     /// The bar on the library pane's top edge: what plays and what waits,
@@ -586,6 +595,7 @@ impl App {
         let mut elsewhere = false;
         let mut library = false;
         let mut back = false;
+        let mut unlock = false;
         let mut step = 0;
         let nudge = self.hearing.nudged.and_then(|at| {
             let since = ui.input(|input| input.time) - at;
@@ -637,10 +647,18 @@ impl App {
                         .gap(6.0)
                         .show(|ui| {
                             theme::menu_width(ui, 300.0);
+                            let read_only = self
+                                .pro_active()
+                                .then(|| self.pro.read_only_firmware())
+                                .flatten();
+                            let aside = read_only.as_ref().map_or_else(
+                                || heard.source.words().to_owned(),
+                                |firmware| format!("on firmware {firmware}"),
+                            );
                             theme::menu_header(
                                 ui,
                                 &format!("Keep {}", heard.name),
-                                Some(heard.source.words()),
+                                Some(aside.as_str()),
                             );
                             let here = format!("In {}, as an edit", set_aside.slot);
                             keep |= theme::menu_keyed(
@@ -651,14 +669,35 @@ impl App {
                                 !loading,
                             )
                             .clicked();
-                            elsewhere |= theme::menu_keyed(
-                                ui,
-                                Some(Icon::ArrowDownToLine),
-                                "In another slot…",
-                                &["Ctrl", "Enter"],
-                                !loading,
-                            )
-                            .clicked();
+                            match self.elsewhere_refusal() {
+                                Some(why) => {
+                                    theme::menu_disabled(
+                                        ui,
+                                        Some(Icon::ArrowDownToLine),
+                                        "In another slot…",
+                                        Some(why.as_str()),
+                                    );
+                                }
+                                None => {
+                                    elsewhere |= theme::menu_keyed(
+                                        ui,
+                                        Some(Icon::ArrowDownToLine),
+                                        "In another slot…",
+                                        &["Ctrl", "Enter"],
+                                        !loading,
+                                    )
+                                    .clicked();
+                                }
+                            }
+                            if self.pro_active() && self.pro.unlock_offer().is_some() {
+                                unlock |= theme::menu_item(
+                                    ui,
+                                    Some(Icon::ShieldCheck),
+                                    "Back up to unlock saving",
+                                    None,
+                                )
+                                .clicked();
+                            }
                             if matches!(heard.source, Source::TonePush(_)) {
                                 library |= theme::menu_keyed(
                                     ui,
@@ -670,16 +709,24 @@ impl App {
                                 .clicked();
                             }
                             theme::menu_separator(ui);
-                            theme::menu_note(
-                                ui,
-                                &format!(
+                            let note = match &read_only {
+                                Some(firmware) => format!(
+                                    "TonePush plays and changes presets on {firmware} but does \
+                                     not write them yet. Kept in {slot}, {tone} plays until you \
+                                     load another preset; Save, renaming and writing a slot wait \
+                                     for firmware TonePush has verified.",
+                                    slot = set_aside.slot,
+                                    tone = heard.name,
+                                ),
+                                None => format!(
                                     "In {slot}, Save then writes it over {name}, and Undo still \
-                                     brings {name} back. Another slot is written once you choose \
-                                     it, and {name} comes back with its changes.",
+                                     brings {name} back. Another slot is written once you confirm \
+                                     which, and {name} comes back with its changes.",
                                     slot = set_aside.slot,
                                     name = set_aside.name,
                                 ),
-                            );
+                            };
+                            theme::menu_note(ui, &note);
                         });
                     if matches!(heard.source, Source::TonePush(_)) && !small {
                         library |= theme::Button::new("Keep in library")
@@ -798,6 +845,9 @@ impl App {
 
         if step != 0 {
             self.step_tones(step);
+        }
+        if unlock {
+            self.pro.back_up_here();
         }
         if keep {
             self.keep_heard();

@@ -156,3 +156,31 @@ counts the edits ("Dream Pop is playing in 01B, with 2 changes"), and a
 switch to another preset asks only about the set-aside preset's changes.
 
 Scene: `hx-audition-edited`, at 1280 × 760.
+
+## Stage 5: put in a slot, asking when it replaces something
+
+The pedal mark, **Put in a slot…** and Keep's **In another slot…** make the
+presets destinations; choosing one writes an empty slot at once and asks
+before replacing anything. The question hangs beside the slot's row, its
+arrow at it: what it replaces, whether that stays in the library and the
+latest backup, and what becomes of the loaded preset (it keeps playing, comes
+back from an audition, or loses its unsaved changes when its own slot is
+written), with **Replace 05B** (Enter) in red and **Put it in 05B** in amber
+when only the loaded slot is at stake. Several chosen tones go in a run from
+the slot chosen, one each in the table's order, with one centred question that
+lists every slot. The rows a question would write are marked, and the deck
+says what was written. An audition is put back before any slot is written.
+On a StompStation PRO with no checked backup the question offers **Back up,
+then put it in 05B** and writes once the backup is checked; on firmware
+TonePush has not verified, Keep's **In another slot…** says "read only on
+2.2.6" and the deck says the firmware is read only. This replaces the silent
+write a chosen slot used to make.
+
+Scenes: `hx-put-ask` (sheet 09), `hx-put-several` (sheet 12) and
+`pro-read-only-keep` (sheet 07), at 1280 × 760.
+
+- A portable `.hlx` tone cannot be written to a slot as it is: it is built on
+  the pedal. Putting one opens its preview aimed at the slot, whose Load builds
+  it there; a run of several leaves it out.
+- The design's several-slot question reads "starting where you dropped them";
+  until drag and drop (stage 7) the run starts at the slot chosen, and says so.

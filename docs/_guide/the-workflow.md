@@ -41,6 +41,12 @@ Turn its knobs while it plays and the changes stay with it, and the bar counts t
 
 While a tone plays, Save is off and Ctrl S points at the bar instead; the deck, the chain and the preset's row in the sidebar say what is auditioned. Switching between the library's tabs leaves it playing. Clicking another preset puts it back first, then asks about its changes as any switch does, and clicking the loaded preset's own row puts it back. A tone the pedal cannot play says why where the bar would be, and offers to show only what the pedal plays. A StompStation PRO auditions the same way, and so does a tone from TonePush.
 
+### Put tones in the pedal's slots
+
+The pedal mark at the start of a tone's row, **Put in a slot…** in its details, and Keep's **In another slot…** all turn the presets on the left into destinations: free slots read Empty in amber, and the row under the pointer says Replace or Put it here. Choose one. An empty slot is written at once. A slot that holds a preset asks first, beside it: what it replaces, whether that preset stays in your library and the pedal's latest backup, and what becomes of the preset that is loaded; **Replace 05B** (Enter) writes it, Esc or Cancel leaves the pedal as it was. Choose several tones with Ctrl-click or Shift-click and they go in a run from the slot you choose, one slot each in the order the list shows them, with one question that lists every slot when any of them holds a preset. The deck says what was written.
+
+On a StompStation PRO with no checked backup yet, the question offers **Back up, then put it in 05B**: TonePush backs the pedal up, which takes about 40 seconds, and writes the slot once the backup is checked. On firmware TonePush has not verified for saving, nothing is written to a slot: Keep's menu says so, and Keep in the loaded slot still plays the tone until you load another preset.
+
 ### 3. Build a setlist
 
 Get the pedal holding the presets you want, in the order you want them, then click the computer icon at the top of the preset list (**Keep every preset on the pedal, in order, as a setlist**), or **Keep the whole pedal as a setlist** on the library's Setlists tab. That records every slot and what is in it; name it, and it opens on that tab.

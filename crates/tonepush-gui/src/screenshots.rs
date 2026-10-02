@@ -118,10 +118,16 @@ enum Scene {
     ProAudition,
     /// Dream Pop auditioned, two knobs turned since: the edits stay with it.
     HxAuditionEdited,
+    /// Slapback Twang put in 05B, which holds Chime Clean: the question.
+    HxPutAsk,
+    /// Three tones put from 14C: the question for several.
+    HxPutSeveral,
+    /// Shimmer Lead auditioned on firmware 2.2.6, Keep's choices open.
+    ProReadOnlyKeep,
 }
 
 impl Scene {
-    const ALL: [Scene; 40] = [
+    const ALL: [Scene; 43] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -162,6 +168,9 @@ impl Scene {
         Scene::HxCannotPlay,
         Scene::ProAudition,
         Scene::HxAuditionEdited,
+        Scene::HxPutAsk,
+        Scene::HxPutSeveral,
+        Scene::ProReadOnlyKeep,
     ];
 
     fn name(self) -> &'static str {
@@ -206,6 +215,9 @@ impl Scene {
             Scene::HxCannotPlay => "hx-cannot-play",
             Scene::ProAudition => "pro-audition",
             Scene::HxAuditionEdited => "hx-audition-edited",
+            Scene::HxPutAsk => "hx-put-ask",
+            Scene::HxPutSeveral => "hx-put-several",
+            Scene::ProReadOnlyKeep => "pro-read-only-keep",
         }
     }
 
@@ -247,10 +259,10 @@ impl Scene {
                     .position(|entry| entry.name == "Slapback Twang")
                     .expect("the library holds Slapback Twang");
                 app.select_lib_entry(sending);
-                app.sending = Some(crate::Sending {
-                    hash: app.lib_entries[sending].hash.clone(),
-                    name: app.lib_entries[sending].name.clone(),
-                });
+                app.sending = Some(crate::put::Sending::one(
+                    app.lib_entries[sending].hash.clone(),
+                    app.lib_entries[sending].name.clone(),
+                ));
             }
             Scene::HxCloud => {
                 hx_stomp(app);
@@ -290,6 +302,57 @@ impl Scene {
             Scene::ProAudition => {
                 pro(app);
                 auditioning(app, "Glass Wall");
+            }
+            Scene::HxPutAsk => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                let index = tone_named(app, "Slapback Twang");
+                app.choose_tone(index);
+                app.lib_reveal = true;
+                let tones = [(
+                    app.lib_entries[index].hash.clone(),
+                    app.lib_entries[index].name.clone(),
+                )];
+                app.put_question = Some(crate::put::Asking {
+                    writes: app.plan_put(13, &tones),
+                    beside: Some(13),
+                    back_up_first: false,
+                });
+            }
+            Scene::HxPutSeveral => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                let chosen: Vec<usize> = ["Brown Lead", "Doom Fuzz", "Dream Pop"]
+                    .iter()
+                    .map(|name| tone_named(app, name))
+                    .collect();
+                app.choose_tone(chosen[0]);
+                app.lib_chosen = chosen
+                    .iter()
+                    .map(|&index| app.lib_entries[index].hash.clone())
+                    .collect();
+                let tones: Vec<(String, String)> = chosen
+                    .iter()
+                    .map(|&index| {
+                        (
+                            app.lib_entries[index].hash.clone(),
+                            app.lib_entries[index].name.clone(),
+                        )
+                    })
+                    .collect();
+                app.put_question = Some(crate::put::Asking {
+                    writes: app.plan_put(41, &tones),
+                    beside: None,
+                    back_up_first: false,
+                });
+            }
+            Scene::ProReadOnlyKeep => {
+                use crate::pro::demo::DemoChain;
+                pro(app);
+                app.pro.show_demo_router(DemoChain::Parallel);
+                app.pro.demo_read_only();
+                app.library_device_filter = None;
+                auditioning(app, "Shimmer Lead");
             }
             Scene::ProPages => {
                 use crate::pro::demo::DemoChain;
@@ -403,6 +466,14 @@ impl Scene {
     }
 }
 
+/// The row of a fixture tone, by its name.
+fn tone_named(app: &App, name: &str) -> usize {
+    app.lib_entries
+        .iter()
+        .position(|entry| entry.name == name)
+        .expect("the library holds the tone")
+}
+
 /// A library tone auditioned with a click, the pedal answering that it
 /// plays: the loaded preset set aside with its unsaved changes and its
 /// history, as the worker would say.
@@ -426,6 +497,7 @@ fn auditioning(app: &mut App, name: &str) {
     app.dirty = false;
     app.undo_depth = 0;
     app.redo_depth = 0;
+    app.pro.demo_history_set_aside();
     app.preset_name = name.to_owned();
 }
 
@@ -725,7 +797,7 @@ impl Demo {
         if matches!(self.scene, Scene::HxPages | Scene::ProPages) {
             egui::Popup::open_id(ui.ctx(), shell::device_card_menu());
         }
-        if self.scene == Scene::HxAuditionKeep {
+        if matches!(self.scene, Scene::HxAuditionKeep | Scene::ProReadOnlyKeep) {
             egui::Popup::open_id(ui.ctx(), crate::audition::keep_menu());
         }
         app.draw(&mut root);

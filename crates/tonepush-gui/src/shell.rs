@@ -127,6 +127,8 @@ pub(crate) struct PresetRow {
     pub edited: bool,
     /// Loaded, and set aside while a tone is auditioned in its place.
     pub heard: bool,
+    /// A slot the open question would write: marked as a drop target is.
+    pub target: bool,
     pub favourite: bool,
     /// Whether the library holds it: the same, under its name but different,
     /// or not at all.
@@ -164,7 +166,7 @@ pub(crate) fn preset_row(ui: &mut Ui, row: &PresetRow, mode: RowMode) -> Respons
     let sending = mode == RowMode::Sending;
     let hovered = response.hovered();
     let corner = CornerRadius::same(7);
-    if sending && hovered {
+    if (sending && hovered) || row.target {
         ui.painter().rect_filled(rect, corner, theme::accent_soft());
         theme::paint::dashed_rect(
             ui.painter(),
@@ -252,7 +254,7 @@ pub(crate) fn preset_row(ui: &mut Ui, row: &PresetRow, mode: RowMode) -> Respons
         right -= 4.0;
     }
 
-    let (name, font, ink) = if sending && row.empty {
+    let (name, font, ink) = if (sending || row.target) && row.empty {
         (
             "Empty".to_owned(),
             theme::medium(theme::BODY),
@@ -1540,6 +1542,7 @@ impl App {
     pub(crate) fn hx_rows(&self) -> Vec<PresetRow> {
         let per_bank = self.presets_per_bank();
         let hearing = self.shown_hearing();
+        let targets = self.put_targets();
         let mut rows: Vec<PresetRow> = (0..self.hx_total())
             .filter(|&index| {
                 !self.show_favorites_only || self.config.is_favorite(self.setlist, index as i64)
@@ -1558,6 +1561,7 @@ impl App {
                             .as_ref()
                             .map_or(self.dirty, |shown| shown.set_aside_dirty),
                     heard: selected && hearing.is_some(),
+                    target: targets.contains(&(index as i64)),
                     favourite: self.config.is_favorite(self.setlist, index as i64),
                     library: self.slot_sync(index as i64),
                     bank_start: index % per_bank == 0,
@@ -1599,7 +1603,7 @@ impl App {
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
                         self.device_card_ui(ui);
                         if self.pro_active() {
-                            let sending = self.sending.as_ref().map(|sending| sending.name.clone());
+                            let sending = self.sending.as_ref().map(crate::put::Sending::words);
                             let on_pages = self.page == Page::Pedal;
                             let picked = self.pro.sidebar(
                                 ui,
@@ -1788,7 +1792,7 @@ impl App {
     }
 
     fn hx_sidebar(&mut self, ui: &mut Ui) {
-        if let Some(name) = self.sending.as_ref().map(|sending| sending.name.clone()) {
+        if let Some(name) = self.sending.as_ref().map(crate::put::Sending::words) {
             if sending_card(ui, &name) {
                 self.sending = None;
             }
@@ -1845,6 +1849,7 @@ impl App {
         };
         let mut load = None;
         let mut pick = None;
+        let mut row_rects = std::collections::BTreeMap::new();
         let mut toggle = None;
         let mut rename_start = None;
         let mut rename_result: Option<Option<(i64, String)>> = None;
@@ -1875,13 +1880,14 @@ impl App {
                 }
             }
             let response = preset_row(ui, row, mode);
+            row_rects.insert(index, response.rect);
             if row.selected && reveal {
                 response.scroll_to_me(Some(egui::Align::Center));
                 reveal = false;
             }
             if mode == RowMode::Sending {
                 if response.clicked() {
-                    pick = Some(index);
+                    pick = Some((index, response.rect));
                 }
                 return;
             }
@@ -2005,7 +2011,8 @@ impl App {
                 self.send(Cmd::Rename { index, name });
             }
         }
-        if let Some(slot) = pick {
+        self.row_rects = row_rects;
+        if let Some((slot, _)) = pick {
             self.finish_sending(slot);
         }
         // Escape gets out of picking the way it gets out of everything else.
@@ -2305,6 +2312,11 @@ impl App {
         }
         if !self.status.is_empty() {
             parts.push(State::Problem(self.status.clone()));
+        }
+        if parts.is_empty() {
+            if let Some(words) = self.wrote_note() {
+                parts.push(State::Good(Icon::Check, words));
+            }
         }
         if self.dirty {
             parts.push(State::Unsaved("Changes not saved".to_owned()));

@@ -320,6 +320,10 @@ pub(crate) struct Panel {
     /// What the editor auditions in the loaded preset's place, for the
     /// deck, the board and the sidebar to say; set by the app each frame.
     pub(crate) hearing: Option<crate::audition::Shown>,
+    /// The slots the open put question would write; set by the app.
+    pub(crate) put_targets: Vec<usize>,
+    /// Where each preset's row was drawn this frame.
+    row_rects: BTreeMap<usize, egui::Rect>,
     preview: Option<(String, Snapshot)>,
     confirmation: Option<Confirmation>,
     /// A whole-device operation and its completion fraction. Kept separate
@@ -412,6 +416,8 @@ impl Panel {
             audition_events: Vec::new(),
             audition_failures: Vec::new(),
             hearing: None,
+            put_targets: Vec::new(),
+            row_rects: BTreeMap::new(),
             preview: None,
             confirmation: None,
             working: None,
@@ -737,6 +743,26 @@ impl Panel {
     /// How many steps undo can take back.
     pub(crate) fn undo_depth(&self) -> usize {
         self.undo_depth
+    }
+
+    /// Where a preset's row was drawn this frame, if it shows.
+    pub(crate) fn row_rect(&self, index: usize) -> Option<egui::Rect> {
+        self.row_rects.get(&index).copied()
+    }
+
+    /// The firmware TonePush plays this pedal on without writing to it.
+    pub(crate) fn read_only_firmware(&self) -> Option<String> {
+        self.read_only.as_ref().map(|_| self.firmware().to_owned())
+    }
+
+    /// Whether a checked backup guards writes to the pedal's memory.
+    pub(crate) fn guarded(&self) -> bool {
+        self.rollback.is_some()
+    }
+
+    /// When the backup that guards the pedal was taken.
+    pub(crate) fn backup_time(&self) -> Option<SystemTime> {
+        self.rollback_time
     }
 
     /// The slot the pedal has loaded, when it says.
@@ -4513,6 +4539,13 @@ pub(crate) mod demo {
         }
 
         /// Open the pedal's page on its backups.
+        /// An audition began: the preset's undo history is set aside, as
+        /// the worker would say.
+        pub(crate) fn demo_history_set_aside(&mut self) {
+            self.undo_depth = 0;
+            self.redo_depth = 0;
+        }
+
         pub(crate) fn demo_page(&mut self) {
             self.tab = Tab::Backups;
         }

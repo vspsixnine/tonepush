@@ -26,6 +26,7 @@ mod library_view;
 mod pages;
 mod pane;
 mod pro;
+mod put;
 #[cfg(test)]
 mod screenshots;
 mod session;
@@ -277,11 +278,6 @@ struct SetlistSave {
 /// "choose a slot" button ask a person to decide something before they can see
 /// what they are deciding between; this puts the list itself into a picking
 /// state, where every row says what it holds and therefore what it would cost.
-struct Sending {
-    hash: String,
-    name: String,
-}
-
 /// The three ways out of that question.
 enum Clash {
     Override,
@@ -529,7 +525,16 @@ pub struct App {
     /// A kept tone waiting on an answer about a name already in use.
     name_clash: Option<NameClash>,
     /// A tone from the library waiting for a slot on the pedal.
-    sending: Option<Sending>,
+    sending: Option<put::Sending>,
+    /// The question a put asks before it replaces anything.
+    put_question: Option<put::Asking>,
+    /// Where each preset's row was drawn this frame, for a question to
+    /// hang beside.
+    row_rects: std::collections::BTreeMap<i64, egui::Rect>,
+    /// A put waiting for the backup it asked the StompStation PRO for.
+    put_after_backup: Option<Vec<put::Write>>,
+    /// What the last put wrote, and when, for the deck to say.
+    wrote: Option<(String, std::time::Instant)>,
     /// What each slot on the pedal is holding, by the hash of its bytes.
     ///
     /// Read out of the automatic backup rather than off the wire: that bundle
@@ -1402,6 +1407,10 @@ impl App {
             lib_editing: None,
             name_clash: None,
             sending: None,
+            put_question: None,
+            row_rects: std::collections::BTreeMap::new(),
+            put_after_backup: None,
+            wrote: None,
             mirror: Default::default(),
             lib_genres_buf: String::new(),
             lib_tag_add: String::new(),
@@ -1983,6 +1992,11 @@ impl App {
             self.device = self.pro.device_name().to_owned();
             self.firmware = self.pro.firmware().to_owned();
             self.pro.hearing = self.shown_hearing();
+            self.pro.put_targets = self
+                .put_targets()
+                .into_iter()
+                .filter_map(|slot| usize::try_from(slot).ok())
+                .collect();
             self.pro.shortcuts(&ctx);
         } else {
             self.shortcuts(&ctx);
@@ -2049,6 +2063,8 @@ impl App {
             self.preview_window(&ctx);
         }
         self.confirm_push_window(&ctx);
+        self.put_question_window(&ctx);
+        self.settle_put_after_backup();
         self.confirm_restore_window(&ctx);
         self.confirm_delete_window(&ctx);
         self.name_clash_window(&ctx);
@@ -2282,7 +2298,8 @@ impl App {
             || self.confirm_push.is_some()
             || self.confirm_delete.is_some()
             || self.name_clash.is_some()
-            || self.sending.is_some();
+            || self.sending.is_some()
+            || self.put_question.is_some();
         if live && !preset_dialog_open {
             let direction = ctx.input_mut(|input| {
                 if input.modifiers != Modifiers::NONE {
@@ -3146,51 +3163,11 @@ impl App {
         }
     }
 
-    /// Put the preset list into a picking state for one library tone.
+    /// Put the preset list into a picking state for a library tone, or for
+    /// every chosen one when it is one of several.
     fn start_sending(&mut self, row: usize) {
-        let Some(entry) = self.lib_entries.get(row) else {
-            return;
-        };
-        if !self.pedal_online() {
-            return self.note("no pedal to send to".into());
-        }
-        if !self.tone_kind_compatible(&entry.hash) {
-            return self.note(format!("{} is for a different pedal family", entry.name));
-        }
-        if let Some(why) = self.refusal_of(entry) {
-            return self.note(why);
-        }
-        self.sending = Some(Sending {
-            hash: entry.hash.clone(),
-            name: entry.name.clone(),
-        });
-    }
-
-    /// Write the tone being sent into the slot that was picked.
-    ///
-    /// No confirmation window. The row itself said what it was holding before
-    /// it was clicked, which is the same information a window would have shown
-    /// and one fewer thing between a person and the thing they meant.
-    fn finish_sending(&mut self, slot: i64) {
-        let Some(sending) = self.sending.take() else {
-            return;
-        };
-        let Some(bytes) = library::read(&sending.hash) else {
-            return self.note(format!("{} is missing from the library", sending.name));
-        };
-        // What was set aside comes back, changes and all, before another
-        // slot is written: that write never touches the loaded buffer.
-        self.put_back();
-        self.note(format!(
-            "writing {} to {}",
-            sending.name,
-            self.active_slot_label(slot)
-        ));
-        if self.pro_active() {
-            self.pro.send_tone(slot as usize, sending.name, bytes);
-        } else {
-            self.send(Cmd::PushSetlist(vec![(slot, Some((sending.name, bytes)))]));
-        }
+        let rows = self.put_rows(row);
+        self.start_putting(&rows);
     }
 
     /// A slot's name and its bytes, out of the automatic backup.
