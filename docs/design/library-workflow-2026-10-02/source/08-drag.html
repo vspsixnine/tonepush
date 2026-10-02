@@ -1,0 +1,145 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · Drag and drop between the pedal, the library and TonePush</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+const q = new URLSearchParams(location.search);
+const kase = q.get('case') || 'slot';
+const d = L.DEV;
+const rect = (id) => document.getElementById(id).getBoundingClientRect();
+const put = (html) => document.querySelector('.win').insertAdjacentHTML('beforeend', html);
+
+// The editor at rest: 01B Plexi Crunch, edited, nothing auditioning.
+const deck = TL.hxDeck();
+const editor = `${deck}<div class="board" id="board"></div><section class="pane fold cat-amp" id="pane">${TL.bhead({ name: 'US Double Nrm' })}<div id="face"></div></section>`;
+const drawEditor = () => {
+  TP.renderChain(document.getElementById('board'), Object.assign(D.hxChain(), { head: TL.hxBoardHead() }));
+  TL.fitFace(document.getElementById('face'), TL.hxCells(D.amp), { sizes: [52, 44] });
+};
+// While a tone is dragged, the board offers itself quietly: drop there to hear it.
+const boardZone = (text) => { document.getElementById('board').insertAdjacentHTML('beforeend', `<div class="dropzone soft" style="inset:6px 8px;align-items:flex-start;padding-top:6px;z-index:1;font-size:12px">${I('volume-2', 's14')}${text}</div>`); };
+const tonesTable = (first, state, o = {}) => TL.table(TL.toneCols(), TL.toneRows(L.tones.slice(first, first + 6), { state }), Object.assign({ scroll: [80, 40] }, o));
+const inspFor = (name, o = {}) => {
+  const t = L.tone(name);
+  return TL.toneInsp(t, Object.assign({ meta: `${t.char} · kept ${t.added}` }, o));
+};
+
+let side, lpane, after = () => {}, extra = '';
+
+if (kase === 'slot' || kase === 'confirm') {
+  // A library tone dragged onto a preset in the sidebar: the row under the
+  // pointer says what the drop does, and the ghost says it in full.
+  side = TL.hxSide({ tweak: (p) => { p[13].id = 'row05b'; p[13].drop = true; p[13].hint = kase === 'slot' ? 'Replace' : ''; p[13].lib = null; } });
+  const state = { 'Slapback Twang': kase === 'slot' ? 'drag' : 'sel' };
+  lpane = TL.pane({ tab: 'tones', height: 232, tabState: kase === 'slot' ? { tones: 'mute', setlists: 'mute', cloud: 'can' } : {},
+    body: tonesTable(12, state) + inspFor('Slapback Twang', { versions: 3, where: TL.wr('tp-pedal', '', 'Not on the HX Stomp yet') + TL.wr('tp-computer', 'on', 'In your library · <b>v3</b>') + TL.wr('cloud-upload', 'hot', 'TonePush has <b>v2</b> · 312 downloads') }) });
+  after = () => {
+    drawEditor();
+    const r = rect('row05b');
+    if (kase === 'slot') {
+      boardZone('Drop on the board to hear it');
+      put(TL.ghost({ x: r.right - 44, y: r.top - 74, cx: r.right - 96, cy: r.top + 5, dev: d.stomp, name: 'Slapback Twang', chain: ['dyn', 'amp', 'cab', 'delay', 'reverb'], icon: 'replace', outcome: 'Replace 05B Chime Clean' }));
+    } else {
+      put(TL.pop({ x: r.right + 10, y: r.top - 12, arrow: 19, title: 'Put Slapback Twang in 05B?', desc: 'This writes the pedal’s memory, so it asks once.',
+        rows: [{ i: 'replace', t: 'Replaces <b>Chime Clean</b> in 05B', c: 'var(--danger)' }, { i: 'shield-check', t: 'Chime Clean stays in your library and the 14:02 backup', z: true }, { i: 'tp-pedal', t: 'Plexi Crunch keeps playing, with its changes', z: true }],
+        actions: `<span class="btn sm">Cancel</span><span class="btn sm danger">Replace 05B<span class="kbd" style="opacity:.8">Enter</span></span>` }));
+    }
+  };
+} else if (kase === 'keep') {
+  // A preset dragged from the sidebar onto the Tones tab: kept in the library.
+  side = TL.hxSide({ tweak: (p) => { p[14].id = 'row05c'; p[14].dragsrc = true; } });
+  lpane = TL.pane({ tab: 'tones', height: 232, tabState: { tones: 'drop', setlists: 'mute', cloud: 'can' }, dropLabel: { tones: 'Keep in Tones' }, dropIcon: { tones: 'tp-computer' },
+    body: tonesTable(12, { 'Plexi Crunch': 'sel' }) + inspFor('Plexi Crunch', { versions: 2, where: TL.wr('tp-pedal', 'on', 'Loaded in <b>01B</b> · <span class="hot">3 changes not saved</span>') + TL.wr('tp-computer', 'on', 'In your library as <b>v2</b>') + TL.wr('cloud', 'on', 'Published · 1,284 downloads') }) });
+  after = () => {
+    drawEditor();
+    const tab = document.querySelector('.ltab.drop').getBoundingClientRect();
+    put(TL.ghost({ x: tab.left + 46, y: tab.top - 70, lead: `<span class="slotchip num" style="height:20px;min-width:32px;font-size:11.5px">05C</span>`, name: 'Smooth Overdrive', chain: ['dyn', 'dist', 'amp', 'cab', 'reverb'], icon: 'tp-computer', outcome: 'Keep in your library, as Smooth Overdrive' }));
+    document.querySelector('.cursor').style.left = (tab.left + 30) + 'px';
+    document.querySelector('.cursor').style.top = (tab.top + 12) + 'px';
+  };
+} else if (kase === 'cloud') {
+  // A public tone dragged onto an empty slot. While anything is dragged over
+  // the presets, free slots read Empty in amber, as sending always has.
+  const presets = D.hxPresets().slice(27, 27 + 20);
+  presets.forEach(p => { p.target = true; p.lib = null; p.fav = false; });
+  presets[15].drop = true; presets[15].hint = 'Put it here'; presets[15].id = 'row15a';
+  presets.forEach((p, i) => { p.bank = i > 0 && p.i % 3 === 0; });
+  side = TL.sidebar({ device: { name: 'HX Stomp', status: 'Connected · 3.80', online: true }, listAside: '84 free', presets,
+    foot: `<span class="ok row">${I('shield-check', 's14')}</span><span class="grow ell">Backed up at 14:02</span><span class="iconbtn sm">${I('settings', 's14')}</span>` });
+  const rows = TL.cloudRows(L.cloud.slice(0, 6), { state: { 'Midnight City': 'drag' } });
+  const c = L.cloud[1];
+  const insp = TL.inspector({ html: `<div class="ih"><div class="tn">Midnight City</div><div class="tm">${TL.dm(c.dev)}<span class="ell">v1 · by Tomas Reyes · Drive</span></div></div>
+    <div class="is"><div class="where">${TL.wr('tp-pedal', '', 'Not on the HX Stomp')}${TL.wr('tp-computer', '', 'Not in your library')}${TL.wr('cloud', 'on', '2,184 downloads · updated 27 Sep')}</div></div>` });
+  lpane = TL.pane({ tab: 'cloud', scope: 'everyone', counts: { cloud: '1,204' }, scopeLabel: 'HX Stomp', height: 232, tabState: { tones: 'can', setlists: 'mute' }, body: TL.table(TL.cloudCols(), rows, { scroll: [4, 40] }) + insp });
+  after = () => {
+    drawEditor();
+    boardZone('Drop on the board to hear it');
+    const r = rect('row15a');
+    put(TL.ghost({ x: r.right - 54, y: r.top - 74, cx: r.right - 100, cy: r.top + 5, dev: d.stomp, name: 'Midnight City', chain: ['dyn', 'dist', 'amp', 'cab', 'delay', 'reverb'], outcome: 'Download, then put it in 15A, which is empty' }));
+  };
+} else if (kase === 'several') {
+  // Three tones dropped on 14C fill 14C and the slots after it, and the
+  // question lists every slot.
+  const presets = D.hxPresets().slice(27, 47);
+  presets.forEach((p, i) => { p.target = true; p.lib = null; p.fav = false; p.bank = i > 0 && p.i % 3 === 0; });
+  [14, 15, 16].forEach(i => { presets[i].drop = true; });
+  side = TL.sidebar({ device: { name: 'HX Stomp', status: 'Connected · 3.80', online: true }, listAside: '84 free', presets,
+    foot: `<span class="ok row">${I('shield-check', 's14')}</span><span class="grow ell">Backed up at 14:02</span><span class="iconbtn sm">${I('settings', 's14')}</span>` });
+  const state = { 'Brown Lead': 'chosen', 'Doom Fuzz': 'chosen', 'Dream Pop': 'sel' };
+  lpane = TL.pane({ tab: 'tones', height: 232, body: tonesTable(1, state) + inspFor('Dream Pop', { where: TL.wr('list-checks', '', '3 tones chosen: Brown Lead, Doom Fuzz, Dream Pop') }) });
+  extra = `<div class="scrim"></div><div class="dialog" style="left:calc(50% - 250px + 116px);top:120px;width:500px">
+    <div class="dh"><div class="dt">Put 3 tones in 14C, 15A and 15B?</div><div class="dd">They go in the order you chose them, one slot each, starting where you dropped them.</div></div>
+    <div class="db"><div class="outc" style="padding:4px 0">
+      ${[['14C', 'Brown Lead', 'replaces <b style="color:var(--text)">Studio Rhythm</b>', 'replace', 'var(--danger)'], ['15A', 'Doom Fuzz', 'an empty slot', 'circle-dashed', ''], ['15B', 'Dream Pop', 'an empty slot', 'circle-dashed', '']]
+        .map(([s, n, w, ic, c]) => `<div class="orow" style="gap:12px"><span class="ic" ${c ? `style="color:${c}"` : ''}>${I(ic, 's14')}</span><span class="slotchip num" style="height:22px;min-width:36px;font-size:12px">${s}</span><b style="color:var(--text);font-weight:600;width:120px">${n}</b><span>${w}</span></div>`).join('')}
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px;font-size:12.5px;color:var(--muted)">${I('shield-check', 's14')}Studio Rhythm stays in the 14:02 backup. Plexi Crunch keeps playing.</div></div>
+    <div class="df"><span class="note">Three writes to the pedal's memory.</span><span class="btn">Cancel</span><span class="btn danger">Write 3 slots</span></div></div>`;
+  after = drawEditor;
+} else if (kase === 'setlist') {
+  // A setlist dragged onto the preset list: the whole list is the target, and
+  // the drop opens the question Put on the pedal always asks.
+  side = TL.hxSide({ side: { dropAll: true, picking: `<div class="row" style="gap:8px;align-items:flex-start">${I('list-music', 's14')}<div><b>Drop to put Rehearsal on the HX Stomp.</b><div class="muted" style="margin-top:2px">TonePush says what it writes before it writes anything.</div></div></div>` } });
+  const cards = L.setlists.map((s, i) => {
+    const chip = s.state === 'matches the pedal' ? `<span class="chip ok">${I('check', 's12')}Matches the pedal</span>` : s.state === 'for another pedal' ? `<span class="chip">For StompStation PRO</span>` : `<span class="chip hot">${I('git-compare', 's12')}${s.state[0].toUpperCase() + s.state.slice(1)}</span>`;
+    return `<div class="slrow ${i === 1 ? 'sel' : ''}" style="${i === 1 ? 'opacity:.55' : ''}"><div class="a"><span class="nm">${s.name}</span>${TL.dm(s.dev, { no: s.dev.f !== 'HX' })}</div><div class="m">${s.venue} · ${s.date} · ${s.count} presets</div><div class="a" style="margin-top:3px">${chip}<span class="faint" style="font-size:11.5px;margin-left:auto">${s.ver}</span></div></div>`;
+  }).join('');
+  const names = D.hxPresets();
+  let grid = '';
+  for (let b = 0; b < 5; b++) {
+    grid += `<div class="bk num">${String(b + 1).padStart(2, '0')}</div>`;
+    for (let k = 0; k < 3; k++) grid += `<div class="bcell same" style="height:28px"><span class="s">${'ABC'[k]}</span><span class="n">${names[b * 3 + k].name}</span></div>`;
+  }
+  const detail = `<div class="sldetail" style="padding:12px 16px 0"><div class="row" style="gap:10px"><div class="grow"><div style="font-size:16px;font-weight:600">Rehearsal</div><div class="pmeta">Room 3 · 28 Sep 2026 · v1 · ${TL.dm(d.stomp)}</div></div>
+    <span class="btn sm">${I('tp-computer')}Capture the pedal as v2</span><span class="btn sm primary">${I('arrow-down-to-line')}Put on HX Stomp…</span></div>
+    <div class="bankgrid" style="margin-top:10px">${grid}</div></div>`;
+  lpane = TL.pane({ tab: 'setlists', height: 232, tabState: { tones: 'mute', cloud: 'mute' }, body: `<div class="slist" style="width:280px;padding:6px">${cards}</div>${detail}` });
+  after = () => {
+    drawEditor();
+    const pl = document.querySelector('.side .plist').getBoundingClientRect();
+    put(TL.ghost({ x: pl.left + 120, y: pl.top + 210, lead: `<span style="color:var(--muted);display:flex">${I('list-music', 's16')}</span>`, name: 'Rehearsal · 38 presets', icon: 'arrow-down-to-line', outcome: 'Put on the HX Stomp… (asks first)' }));
+  };
+} else if (kase === 'publish') {
+  // A library tone dropped on the Cloud tab: TonePush has v2, so this
+  // publishes v3 of the same tone.
+  side = TL.hxSide();
+  lpane = TL.pane({ tab: 'tones', height: 232, body: tonesTable(12, { 'Slapback Twang': 'sel' }) + inspFor('Slapback Twang', { versions: 3, where: TL.wr('tp-pedal', '', 'Not on the HX Stomp yet') + TL.wr('tp-computer', 'on', 'In your library · <b>v3</b>') + TL.wr('cloud-upload', 'hot', 'TonePush has <b>v2</b> · 312 downloads') }) });
+  extra = `<div class="scrim"></div><div class="dialog" style="left:calc(50% - 260px + 116px);top:96px;width:520px">
+    <div class="dh"><div class="dt">Publish Slapback Twang v3 on TonePush?</div><div class="dd">TonePush has v2 of this tone, downloaded 312 times. v3 becomes the version people get; v2 stays on its page and can still be downloaded.</div></div>
+    <div class="db"><div class="kv2" style="grid-template-columns:110px 1fr;row-gap:11px;font-size:13px">
+      <span class="k">Song</span><span class="v">Dust Road · The Night Signals</span>
+      <span class="k">Tone</span><span class="v">Slapback Twang · Clean · Rhythm</span>
+      <span class="k">For</span><span class="v row" style="gap:8px">${TL.dm(d.stomp)}<span>firmware 3.80</span></span>
+      <span class="k">Who can see it</span><span class="v row" style="gap:7px">${I('globe', 's14')}Everyone, on tonepush.rocks</span>
+      <span class="k">Published as</span><span class="v">Carmine</span></div>
+      <div class="row" style="gap:8px;margin-top:14px;font-size:12.5px;color:var(--muted)">${I('info', 's14')}The song and tone details are the library's; change them in the tone's details first.</div></div>
+    <div class="df"><span class="note"></span><span class="btn">Cancel</span><span class="btn primary">${I('cloud-upload')}Publish v3</span></div></div>`;
+  after = drawEditor;
+}
+
+TL.mount(`<div class="win">${side}<div class="main">${editor}${lpane}</div>${extra}</div>`, after);
+</script></body></html>

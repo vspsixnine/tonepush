@@ -1,0 +1,124 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · What you published</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+const q = new URLSearchParams(location.search);
+const server = q.get('server') === '1';
+const dialog = q.get('dialog');
+const d = L.DEV;
+
+// Cloud, Mine. The pane has been dragged up to the board, so the block pane
+// keeps only its head while the list has the room.
+const side = TL.hxSide();
+const deck = TL.hxDeck();
+
+const plCell = (t) => {
+  const pedal = TL.plays('stomp', t.dev) ? `<span>${I('tp-pedal', 's14')}</span>` : `<span class="no">${I('ban', 's14')}</span>`;
+  const comp = t.here === false ? `<span title="not in this library">${I('tp-computer', 's14')}</span>` : `<span class="on" title="in your library">${I('tp-computer', 's14')}</span>`;
+  return `<span class="pl">${pedal}${comp}</span>`;
+};
+const verCell = (t) => t.state === 'newer' ? `<span class="vs hot">${t.up} · library has ${t.lib}</span>`
+  : t.here === false ? `<span class="vs">${t.up} · not in this library</span>` : `<span class="vs">${t.up}</span>`;
+const visCell = (t) => t.hidden ? `<span class="vis hid">${I('eye-off')}Only you</span>` : `<span class="vis">${I('globe')}Everyone</span>`;
+
+const mine = L.mine.slice();
+if (server) {
+  mine.splice(2, 0, { name: 'Arena Lead', dev: d.helix, chain: ['dyn', 'dist', 'amp', 'cab', 'delay', 'reverb'], song: 'Original', up: 'v1', lib: null, downloads: '1,402', published: '3 Aug', here: false });
+  mine[6].hidden = true;
+}
+const cols = server
+  ? [{ k: 'pl', w: 52 }, { k: 'dev', t: 'Pedal', w: 96 }, { k: 'name', t: 'Name', w: 160 }, { k: 'ver', t: 'On TonePush', w: 156 }, { k: 'vis', t: 'Who sees it', w: 108 }, { k: 'dl', t: 'Downloads', w: 96, sorted: 'down' }, { k: 'pub', t: 'Published', w: 84 }]
+  : [{ k: 'pl', w: 52 }, { k: 'dev', t: 'Pedal', w: 96 }, { k: 'name', t: 'Name', w: 140 }, { k: 'song', t: 'Song · Artist', w: 150 }, { k: 'ver', t: 'On TonePush', w: 150 }, { k: 'dl', t: 'Downloads', w: 96, sorted: 'down' }, { k: 'pub', t: 'Published', w: 84 }];
+const sel = server && !dialog ? 'Album release show' : 'Slapback Twang';
+const rowsOf = (list) => list.map(t => ({
+  cls: t.name === sel ? 'sel' : '',
+  cells: { pl: plCell(t), dev: TL.dm(t.dev, { no: !TL.plays('stomp', t.dev) }), name: t.name, song: t.artist ? `${t.song} <span class="muted">· ${t.artist}</span>` : `<span class="muted">${t.song}</span>`, ver: verCell(t), vis: visCell(t), dl: `<span class="num">${t.downloads}</span>`, pub: `<span class="muted num">${t.published}</span>` },
+}));
+let rows = rowsOf(mine);
+if (server) {
+  // Setlists you pushed, a second group in the same list.
+  const group = (t, n) => ({ cls: 'grp', cells: { pl: `<span class="row" style="gap:8px;white-space:nowrap"><span class="caps" style="font-size:10.5px">${t}</span><span class="muted" style="font-size:12px">${n}</span></span>` } });
+  const sl = [
+    { name: 'Album release show', dev: d.stomp, up: 'v2 · 42 presets', downloads: '96', published: '2 Oct' },
+    { name: 'Summer tour', dev: d.pro2, up: 'v3 · 21 presets', downloads: '0', published: '2 Aug', hidden: true },
+  ];
+  rows = [group('Setlists', 2), ...sl.map(s => ({
+    cls: s.name === sel ? 'sel' : '',
+    cells: { pl: `<span class="pl"><span class="on">${I('list-music', 's14')}</span></span>`, dev: TL.dm(s.dev, { no: s.dev.f !== 'HX' }), name: s.name, ver: `<span class="vs">${s.up}</span>`, vis: visCell(s), dl: `<span class="num">${s.downloads}</span>`, pub: `<span class="muted num">${s.published}</span>` },
+  })), group('Tones', 9), ...rows];
+}
+const strip = server
+  ? `<div class="mstrip"><span class="lead">${I('user', 's14')}</span><span><b style="color:var(--text)">Carmine</b> on TonePush · 9 tones and 2 setlists · 8,915 downloads</span><span class="grow"></span><span class="btn sm ghost">${I('external-link', 's13')}Your page on tonepush.rocks</span></div>`
+  : `<div class="mstrip"><span class="lead">${I('cloud-upload', 's14')}</span><span><b style="color:var(--text)">8 tones</b> published from this library · 7,817 downloads</span><span class="grow"></span><span class="muted" style="font-size:12px">Signed in as Carmine</span></div>`;
+const table = TL.table(cols, rows, { scroll: [4, 160] });
+
+let insp;
+if (server && !dialog) {
+  insp = TL.inspector({ html: `<div class="ih"><div class="tn">Album release show</div><div class="tm">${TL.dm(d.stomp)}<span class="ell">v2 · 42 presets · Lido Rooftop, Berlin</span></div></div>
+    <div class="is"><div class="where">
+      ${TL.wr('globe', 'on', 'Everyone can see it', `<span class="btn sm ghost">${I('eye-off', 's13')}Hide</span>`)}
+      ${TL.wr('download', '', '96 downloads · published 2 Oct')}
+      ${TL.wr('tp-computer', 'on', 'In your library as <b>v2</b>, the same')}
+      ${TL.wr('tp-pedal', 'hot', '6 slots differ from the HX Stomp')}
+    </div><div class="row" style="gap:8px;margin-top:8px"><span class="btn sm">${I('arrow-down-to-line', 's13')}Put on HX Stomp…</span><span class="btn sm ghost" style="color:var(--danger)">${I('trash-2', 's13')}Delete…</span></div></div>
+    <div class="is"><div class="lbl">Its tones</div><div class="soft" style="font-size:12.5px;line-height:18px">42 presets: 38 are tones you published on their own, and 4 travel only with the setlist. A setlist downloads as one file.</div></div>` });
+} else {
+  insp = TL.inspector({ html: `<div class="ih"><div class="tn">Slapback Twang</div><div class="tm">${TL.dm(d.stomp)}<span class="ell">v2 on TonePush · Dust Road</span></div></div>
+    <div class="is"><div class="where">
+      ${TL.wr('tp-computer', 'hot', 'Your library has <b>v3</b>', `<span class="btn sm">${I('cloud-upload', 's13')}Publish v3</span>`)}
+      ${TL.wr('download', '', '312 downloads · published 17 Sep')}
+      ${TL.wr('globe', 'on', server ? 'Everyone can see it' : 'Public on tonepush.rocks')}
+      ${TL.wr('tp-pedal', '', 'Not on the HX Stomp')}
+    </div></div>
+    <div class="is"><div class="lbl">Versions on TonePush</div><div class="vlist">
+      <div class="vr"><b>v2</b><span class="muted">17 Sep</span><span class="grow"></span><span class="chip ok">Current</span></div>
+      <div class="vr"><b>v1</b><span class="muted">9 Sep</span><span class="grow"></span><span class="muted" style="font-size:12px">click to hear it</span></div></div></div>` });
+}
+
+const lpane = TL.pane({ tab: 'cloud', scope: 'mine', mineCount: server ? 11 : 8, counts: { cloud: '1,204' }, filter: 'Most downloaded', height: 382,
+  body: `<div style="flex:1;min-width:0;display:flex;flex-direction:column">${strip}${table}</div>${insp}` });
+
+let extra = '';
+if (!server) {
+  extra = TL.menu({ id: 'ctx', w: 286, rows: [
+    { head: 'Slapback Twang', h: 'yours · v2' },
+    { icon: 'volume-2', t: 'Play on the HX Stomp', k: ['Space'] },
+    { icon: 'arrow-down-to-line', t: 'Put in a slot…', k: ['Ctrl', 'Enter'] },
+    { icon: 'tp-computer', t: 'Show in your tones' },
+    '-',
+    { icon: 'cloud-upload', t: 'Publish v3 from your library…', cls: 'hov' },
+    { icon: 'text-cursor-input', t: 'Rename on TonePush…' },
+    { icon: 'history', t: 'Make another version current', sub: true },
+    '-',
+    { icon: 'external-link', t: 'Open on tonepush.rocks' },
+    { icon: 'link', t: 'Copy link' },
+  ] });
+} else if (dialog === 'delete') {
+  extra = `<div class="scrim"></div><div class="dialog" style="left:calc(50% - 250px + 116px);top:150px;width:500px">
+    <div class="dh"><div class="dt">Delete Slapback Twang from TonePush?</div><div class="dd">Its page and both versions go from tonepush.rocks. This cannot be undone there; publishing it again starts it over at v1.</div></div>
+    <div class="db"><div class="outc">
+      <div class="orow"><span class="ic" style="color:var(--danger)">${I('trash-2', 's14')}</span><span class="n num">2</span><span>versions deleted, v1 and v2</span></div>
+      <div class="orow z"><span class="ic">${I('download', 's14')}</span><span class="n num">312</span><span>downloads: whoever kept it keeps their copy</span></div>
+      <div class="orow z"><span class="ic">${I('tp-computer', 's14')}</span><span class="n num">v3</span><span>stays in your library, untouched</span></div>
+    </div></div>
+    <div class="df"><span class="note">Hiding it keeps the page for you alone.</span><span class="btn">Cancel</span><span class="btn danger">Delete from TonePush</span></div></div>`;
+}
+
+TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board" id="board"></div>
+  <section class="pane fold cat-amp" id="pane">${TL.bhead({ name: 'US Double Nrm' })}<div id="face"></div></section>${lpane}</div>${extra}</div>`, () => {
+  TP.renderChain(document.getElementById('board'), Object.assign(D.hxChain(), { head: TL.hxBoardHead() }));
+  TL.fitFace(document.getElementById('face'), TL.hxCells(D.amp), { sizes: [52, 44] });
+  const m = document.getElementById('ctx');
+  if (m) {
+    const r = [...document.querySelectorAll('.ptbl .tr')].find(x => x.textContent.includes('Slapback Twang')).getBoundingClientRect();
+    m.style.left = (r.left + 300) + 'px';
+    m.style.top = (r.top - 250) + 'px';
+    document.querySelector('.win').insertAdjacentHTML('beforeend', TL.cursor(r.left + 292, r.top + 14));
+  }
+});
+</script></body></html>

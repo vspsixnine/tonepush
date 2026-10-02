@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · A tone from TonePush, auditioned on a click</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+
+// Cloud, Everyone, scoped to the connected HX Stomp. One click on Glass
+// Cathedral: TonePush sends the file (kept for the session), the pedal plays
+// it, and Keep's first choice is the library, since the tone is not yours yet.
+const side = TL.hxSide({ aud: true });
+const deck = TL.deck({
+  slot: '01B', name: 'Glass Cathedral',
+  meta: `<span class="acc">${I('volume-2', 's12')}Auditioning, from TonePush</span><span class="sep">·</span><span>by Mira Holt</span>`,
+  snaps: [{ name: 'Verse', on: true }, { name: 'Chorus' }, { name: 'Swell' }], tempo: '84.0', undo: false, dirty: false,
+  save: `<span class="btn disabled">Save</span>`,
+});
+
+const rows = TL.cloudRows(L.cloud.slice(0, z(4, 6, 14)), { state: { 'Glass Cathedral': 'play' } });
+const table = TL.table(TL.cloudCols(), rows, { scroll: [4, 40] });
+const c = L.cloud[0];
+const insp = TL.inspector({ html: `<div class="ih"><div class="tn">Glass Cathedral</div>
+    <div class="tm">${TL.dm(c.dev)}<span class="ell">v2 of 2 · by Mira Holt · Clean</span></div></div>
+  <div class="is"><div class="where">
+    ${TL.wr('volume-2', 'acc', '<span class="acc">Playing in 01B</span>, in place of Plexi Crunch')}
+    ${TL.wr('tp-computer', '', 'Not in your library', `<span class="btn sm">${I('cloud-download', 's13')}Keep</span>`)}
+    ${TL.wr('cloud', 'on', '3,410 downloads · updated 30 Sep', `<span class="iconbtn sm" title="Open on tonepush.rocks">${I('external-link', 's14')}</span>`)}
+  </div></div>
+  <div class="is"><div class="lbl">Versions</div><div class="vlist">
+    <div class="vr play"><b>v2</b><span class="muted">30 Sep</span><span class="grow"></span><span class="chip live" style="height:20px">${I('volume-2')}Playing</span></div>
+    <div class="vr"><b>v1</b><span class="muted">14 Sep</span><span class="grow"></span><span class="muted" style="font-size:12px">click to hear it</span></div>
+  </div></div>` });
+
+const bar = TL.abar({
+  text: '<b>Glass Cathedral</b> plays in 01B. <b>Plexi Crunch</b> waits.',
+  actions: TL.backBtn('Put Plexi Crunch back') + `<span class="btn sm" style="height:30px">${I('cloud-download', 's14')}Keep in library<span class="kbd">Ctrl D</span></span>` + TL.keepBtn('Keep in 01B'),
+});
+const lpane = TL.pane({ tab: 'cloud', scope: 'everyone', counts: { cloud: '1,204' }, scopeLabel: 'HX Stomp', height: z(186, 232, 512), bar, body: table + insp });
+
+TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board aud" id="board"></div>
+  <section class="pane fold cat-amp" id="pane">${TL.bhead({ name: 'US Princess' })}<div id="face"></div></section>${lpane}</div></div>`, () => {
+  TP.renderChain(document.getElementById('board'), Object.assign(L.cathedralChain(), {
+    head: `<span><b>6</b> blocks</span><span>·</span><span>Path 1</span><span>·</span><span class="acc">${I('volume-2', 's12')}Auditioning Glass Cathedral, from TonePush</span><span class="grow"></span>${TP.legend()}`,
+  }));
+  TL.fitFace(document.getElementById('face'), TL.hxCells(L.princess), { sizes: [52, 44] });
+});
+</script></body></html>

@@ -1,0 +1,62 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · What goes where</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I } = TP;
+const d = L.DEV;
+const src = (icon, t) => `<span class="src">${I(icon)}${t}</span>`;
+const ask = (t) => t ? `<span class="soft">${t}</span>` : `<span class="muted">No</span>`;
+// [what you drag, where you drop it, what happens, whether it asks first]
+const rows = [
+  [src('tp-computer', 'A library tone'), 'a preset in the sidebar', 'Writes it into that slot. Plexi Crunch keeps playing.', 'Yes, naming what it replaces'],
+  [src('tp-computer', 'Several library tones'), 'a preset in the sidebar', 'Fills that slot and the ones after it, in the order chosen', 'Yes, slot by slot'],
+  [src('tp-computer', 'A library tone'), 'the board', 'Plays it: the same as a click', ''],
+  [src('tp-computer', 'A library tone'), 'the Cloud tab, or Cloud', 'Publishes it, or its newer version', 'Yes, the publish sheet'],
+  [src('cloud', 'A TonePush tone'), 'a preset in the sidebar', 'Downloads it, then writes it into that slot', 'Yes, naming what it replaces'],
+  [src('cloud', 'A TonePush tone'), 'the Tones tab, or Tones', 'Keeps it in your library', 'Only if the name is taken'],
+  [src('cloud', 'A TonePush tone'), 'the board', 'Plays it', ''],
+  [src('tp-pedal', 'A preset in the sidebar'), 'the Tones tab, or Tones', 'Keeps it in your library, or as its next version', 'Only if the name is taken'],
+  [src('tp-pedal', 'A preset in the sidebar'), 'another preset', 'Copies it there', 'Yes, naming what it replaces'],
+  [src('tp-pedal', 'A preset in the sidebar'), 'the Cloud tab', 'Keeps it in your library, then publishes it', 'Yes, the publish sheet'],
+  [src('audio-lines', 'The deck’s name: what is playing'), 'the Tones tab', 'Keeps the preset as it sounds now, edits and all', 'Only if the name is taken'],
+  [src('list-music', 'A setlist'), 'the presets in the sidebar', 'Puts the whole setlist on the pedal', 'Yes, the setlist question'],
+  [src('list-music', 'One slot of a setlist'), 'a preset in the sidebar', 'Writes that one preset into the slot', 'Yes, naming what it replaces'],
+  [src('list-music', 'One slot of a setlist'), 'the Tones tab', 'Keeps that tone in your library', 'Only if the name is taken'],
+  [src('tp-pedal', 'The Presets heading: the whole pedal'), 'the Setlists tab', 'Keeps every slot as a new setlist', 'Asks for its name'],
+  [src('tp-pedal', 'The Presets heading'), 'a setlist', 'Captures the pedal as that setlist’s next version', ''],
+  [src('file', 'A file: .hxpreset, .hlx, .vxpreset'), 'the Tones tab, or Tones', 'Imports it into your library', 'Only if the name is taken'],
+  [src('file', 'A file'), 'a preset in the sidebar', 'Writes it into that slot', 'Yes, naming what it replaces'],
+];
+const table = `<div class="dtable" style="grid-template-columns:300px 210px minmax(0,1fr) 210px">
+  <div class="h">You drag</div><div class="h">onto</div><div class="h">and TonePush</div><div class="h">Asks first</div>
+  ${rows.map((r, i) => r.map((c, j) => `<div class="d ${i === rows.length - 1 ? 'last' : ''}" style="${j === 1 ? 'color:var(--text);' : ''}${[3, 6, 10, 13, 15].includes(i) ? 'border-bottom-color:var(--line-strong);' : ''}">${j === 3 ? ask(c) : c}</div>`).join('')).join('')}
+</div>`;
+
+const prow = (p) => TL.prow(p);
+const panel = `<div style="display:flex;flex-direction:column;gap:14px;width:470px;flex:none">
+  <div class="card" style="padding:14px 16px"><div class="mcap" style="margin-bottom:10px">The row under the pointer says what the drop does</div>
+    <div style="width:232px;background:var(--bg);border-radius:10px;padding:4px 8px;border:1px solid var(--line)">
+      ${prow({ slot: '05A', name: 'Shimmer Pad' })}${prow({ slot: '05B', name: 'Chime Clean', drop: true, hint: 'Replace' })}${prow({ slot: '05C', name: 'Smooth Overdrive' })}
+      ${prow({ slot: '15A', name: '', empty: true, target: true, bank: true, drop: true, hint: 'Put it here' })}${prow({ slot: '15B', name: '', empty: true, target: true })}
+    </div>
+    <div class="muted" style="font-size:12px;line-height:17px;margin-top:10px">While anything is dragged over the presets, free slots read Empty in amber, as sending a tone always has. A slot TonePush cannot write shows a lock and a reason.</div></div>
+  <div class="card" style="padding:14px 16px"><div class="mcap" style="margin-bottom:10px">The pane’s tabs take drops, even with the pane folded away</div>
+    <div class="row" style="gap:4px;background:var(--bg);border-radius:10px;padding:6px;border:1px solid var(--line)">
+      <span class="ltab drop">${I('tp-computer')}Keep in Tones</span><span class="ltab mute">Setlists <span class="n">5</span></span><span class="ltab can">${I('cloud')}Cloud</span></div>
+    <div class="muted" style="font-size:12px;line-height:17px;margin-top:10px">The tab under the pointer turns into its action. Tabs that would take the drop wear a faint dashed edge; the ones that would not are dimmed.</div></div>
+  <div class="card" style="padding:14px 16px 16px"><div class="mcap" style="margin-bottom:12px">The ghost says it in full, and says why not</div>
+    <div style="position:relative;height:168px">
+      ${TL.ghost({ x: 14, y: 2, dev: d.stomp, name: 'Slapback Twang', chain: ['dyn', 'amp', 'cab', 'delay', 'reverb'], icon: 'replace', outcome: 'Replace 05B Chime Clean' })}
+      ${TL.ghost({ x: 14, y: 90, dev: d.pro2, name: 'Velvet Drive', no: true, outcome: 'The HX Stomp cannot play a StompStation PRO tone' })}
+    </div></div>
+  <div class="card" style="padding:14px 16px 16px"><div class="mcap" style="margin-bottom:12px">Several at once</div>
+    <div style="position:relative;height:84px">${TL.ghost({ x: 14, y: 6, dev: d.stomp, name: 'Brown Lead and 2 more', count: 3, outcome: 'Fill 14C, 15A and 15B' })}</div></div>
+</div>`;
+
+TP.mount(`<div class="sheetpage"><div><h1>What goes where</h1><div class="sub">Every drag has a menu item and a key as well. A drop that writes the pedal’s memory asks first, names what it replaces, and says the backup keeps it.</div></div>
+  <div class="row" style="gap:20px;align-items:flex-start;min-height:0">${`<div style="flex:1;min-width:0">${table}</div>`}${panel}</div></div>`);
+document.querySelectorAll('.cursor').forEach(c => c.remove());
+</script></body></html>

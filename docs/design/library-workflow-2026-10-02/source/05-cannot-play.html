@@ -1,0 +1,72 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · When a click cannot play</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+const q = new URLSearchParams(location.search);
+const kase = q.get('case') || 'family';
+
+if (kase === 'family') {
+  // Velvet Drive is a StompStation PRO tone. The click selects it and says
+  // why the HX Stomp stays on Plexi Crunch; nothing is sent to the pedal.
+  const side = TL.hxSide();
+  const deck = TL.hxDeck();
+  const rows = TL.toneRows(L.tones.slice(14, 14 + z(4, 6, 14)), { state: { 'Velvet Drive': 'sel' } });
+  const table = TL.table(TL.toneCols(), rows, { scroll: [120, 40] });
+  const t = L.tone('Velvet Drive');
+  const insp = TL.toneInsp(t, {
+    no: true, meta: 'Drive · kept 28 Sep', versions: 4,
+    where: TL.wr('ban', '', 'Plays on a <b>StompStation PRO</b> on 2.x')
+      + TL.wr('tp-computer', 'on', 'In your library · <b>v4</b>')
+      + TL.wr('cloud', 'on', 'Published · 1,630 downloads', `<span class="iconbtn sm" title="Open on tonepush.rocks">${I('external-link', 's14')}</span>`),
+  });
+  const bar = TL.abar({
+    lead: `<span class="lead">${I('info', 's16')}</span>`, keys: false,
+    text: '<b>Velvet Drive</b> is a StompStation PRO tone. The HX Stomp cannot play it, so it stays on Plexi Crunch.',
+    actions: `<span class="btn sm ghost" style="height:30px">${I('filter', 's14')}Show only what the HX Stomp plays</span>`,
+  }).replace('class="abar"', 'class="abar info"');
+  const lpane = TL.pane({ tab: 'tones', height: z(186, 232, 512), bar, body: table + insp });
+  TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board" id="board"></div>
+    <section class="pane fold cat-amp" id="pane">${TL.bhead({ name: 'US Double Nrm' })}<div id="face"></div></section>${lpane}</div></div>`, () => {
+    TP.renderChain(document.getElementById('board'), Object.assign(D.hxChain(), { head: TL.hxBoardHead() }));
+    TL.fitFace(document.getElementById('face'), TL.hxCells(D.amp), { sizes: [52, 44] });
+  });
+} else {
+  // No pedal: a click shows the tone where the editor would be, read only,
+  // and says what would make it play.
+  const side = TL.sidebar({
+    device: { name: 'No pedal', status: 'Looking on USB…', online: false },
+    listAside: '', presets: [],
+    foot: `<span class="row" style="color:var(--accent)">${TP.logo(16)}</span><span class="grow ell">TonePush 0.8.0</span><span class="iconbtn sm">${I('settings', 's14')}</span>`,
+  }).replace('<div class="plist"><div class="fade"></div></div>', `<div class="plist" style="padding:4px 16px;font-size:12.5px;line-height:17px;color:var(--muted)">The pedal's presets appear here, in its own banks, as soon as it connects.</div>`);
+  const deck = `<header class="deck"><span class="chip" style="height:24px">${I('eye', 's12')}Preview</span>
+    <div class="ptitlewrap"><div class="ptitle">Dream Pop</div><div class="pmeta"><span>From your library</span><span class="sep">·</span><span>${TL.dm(L.DEV.stomp)}</span><span class="sep">·</span><span>Not playing: no pedal is connected</span></div></div>
+    <div class="grow"></div><span class="btn sm ghost">${I('usb')}Back to Plug in your pedal</span></header>`;
+  const rows = TL.toneRows(L.tones.slice(2, 2 + z(4, 6, 14)), { connected: null, state: { 'Dream Pop': 'sel' } });
+  const table = TL.table(TL.toneCols(), rows, { scroll: [22, 40] });
+  const t = L.tone('Dream Pop');
+  const insp = TL.toneInsp(t, {
+    meta: 'Clean · kept 23 Sep',
+    where: TL.wr('tp-pedal', '', 'Plays on an HX Stomp or a Stomp XL')
+      + TL.wr('tp-computer', 'on', 'In your library · <b>v1</b>')
+      + TL.wr('cloud', 'on', 'Published · 455 downloads', `<span class="iconbtn sm" title="Open on tonepush.rocks">${I('external-link', 's14')}</span>`),
+  });
+  const bar = TL.abar({
+    lead: `<span class="lead">${I('usb', 's16')}</span>`, keys: false,
+    text: 'No pedal is connected, so <b>Dream Pop</b> is shown, not played. Plug in your HX Stomp and the next click plays.',
+    actions: '',
+  }).replace('class="abar"', 'class="abar info"');
+  const lpane = TL.pane({ tab: 'tones', height: z(186, 232, 512), bar, body: table + insp, account: `<span class="btn sm ghost acct">Carmine${I('chevron-down', 's12')}</span>`, scopeLabel: 'All pedals' });
+  TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board" id="board"></div>
+    <section class="pane fold cat-amp" id="pane">${TL.bhead({ name: 'US Deluxe Nrm' }).replace(/<span class="btn sm"[\s\S]*?<div class="seg lens">/, '<div class="seg lens">')}<div id="face"></div></section>${lpane}</div></div>`, () => {
+    TP.renderChain(document.getElementById('board'), Object.assign(L.dreamPopChain(), {
+      head: `<span><b>5</b> blocks</span><span>·</span><span>Path 1</span><span>·</span><span>Read only until a pedal connects</span><span class="grow"></span>${TP.legend()}`,
+    }));
+    TL.fitFace(document.getElementById('face'), TL.hxCells(L.deluxe), { sizes: [52, 44], style: 'opacity:0.92' });
+  });
+}
+</script></body></html>

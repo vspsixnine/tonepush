@@ -1,0 +1,58 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · Device markers</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I } = TP;
+const d = L.DEV;
+const helix = { f: 'HX', m: 'Helix', name: 'Helix' };
+const card = (title, body, style = '') => `<div class="card" style="padding:14px 16px 16px;${style}"><div class="mcap" style="margin-bottom:12px">${title}</div>${body}</div>`;
+const variants = [[d.stomp, 'kept from an HX Stomp'], [d.xl, 'kept from an HX Stomp XL'], [d.fx, 'kept from an HX Effects'], [d.helix, 'kept from a Helix LT'], [helix, 'a Helix Floor tone on TonePush'], [d.pro2, 'needs firmware 2.x: it has a chain layout'], [d.pro15, 'saved on firmware 1.5']];
+const v = `<div style="display:grid;grid-template-columns:130px 1fr;row-gap:10px;align-items:center;font-size:12.5px;color:var(--text-soft)">${variants.map(([dev, t]) => `<span>${TL.dm(dev)}</span><span>${t}</span>`).join('')}</div>`;
+const states = `<div style="display:grid;grid-template-columns:130px 1fr;row-gap:12px;align-items:center;font-size:12.5px;color:var(--text-soft)">
+  <span>${TL.dm(d.stomp)}</span><span>The pedal connected plays it</span>
+  <span>${TL.dm(d.pro2, { no: true })}</span><span>It does not: dashed, and the place mark is ${I('ban', 's13')} with the reason on hover</span>
+  <span class="row" style="gap:6px">${TL.dm(d.stomp, { only: true })}${TL.dm(d.pro2, { only: true })}</span><span>At 1024 points the column keeps the family; the model is in the tooltip and the inspector</span>
+</div>`;
+
+// Where the marker appears: the same chip in the same place on every row.
+const libRow = TL.table([{ k: 'pl', w: 52 }, { k: 'dev', t: 'Pedal', w: 96 }, { k: 'name', t: 'Name', w: 150 }, { k: 'chain', t: 'Chain', w: 124 }],
+  TL.toneRows([L.tone('Dream Pop'), L.tone('Pedalboard Wash'), L.tone('Velvet Drive')]), { style: 'flex:none;border:1px solid var(--line);border-radius:10px', fade: false });
+const cloudRow = TL.table([{ k: 'pl', w: 52 }, { k: 'dev', t: 'Pedal', w: 96 }, { k: 'name', t: 'Name', w: 150 }, { k: 'by', t: 'By', w: 124 }],
+  TL.cloudRows([L.cloud[0], { name: 'Low Tide Lead', dev: d.pro2, chain: [], by: 'K. Albrecht', downloads: '940' }]), { style: 'flex:none;border:1px solid var(--line);border-radius:10px', fade: false });
+const setl = (s, no) => `<div class="slrow" style="background:var(--bg);border:1px solid var(--line)"><div class="a"><span class="nm">${s.name}</span>${TL.dm(s.dev, { no })}</div><div class="m">${s.venue} · ${s.count} presets</div></div>`;
+const where = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div><div class="muted" style="font-size:12px;margin-bottom:6px">Tones and Cloud: a Pedal column, after the place marks</div>${libRow}<div style="height:10px"></div>${cloudRow}</div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <div class="muted" style="font-size:12px">Setlists: beside the name</div>
+    ${setl(L.setlists[0])}${setl(L.setlists[3], true)}
+    <div class="muted" style="font-size:12px;margin-top:4px">The inspector, the drag ghost, the publish sheet and the deck of a preview</div>
+    <div class="row" style="gap:10px;flex-wrap:wrap"><span class="tm row" style="gap:7px;font-size:12px;color:var(--muted)">${TL.dm(d.stomp)}v1 · Clean · kept 23 Sep</span>
+      <span class="row" style="gap:8px;padding:7px 10px;border-radius:10px;background:var(--panel);border:1px solid var(--line-strong);font-size:13px;font-weight:600">${TL.dm(d.stomp)}Slapback Twang</span></div>
+    <div class="muted" style="font-size:12px;margin-top:4px">The pedal’s own presets need no marker: the device card names the pedal they are on</div>
+    <div class="devcard" style="margin:0;width:232px"><div class="well">${I('tp-pedal', 's18')}</div><div class="grow"><div class="nm">HX Stomp</div><div class="st"><span class="dot"></span>Connected · 3.80</div></div><span class="chev">${I('chevrons-up-down', 's14')}</span></div>
+  </div></div>`;
+
+const plays = [
+  ['HX Stomp', [d.stomp]], ['HX Stomp XL', [d.stomp, d.xl]], ['HX Effects', [d.fx]], ['Helix Floor', [helix, { f: 'HX', m: 'Helix Floor' }]],
+  ['StompStation PRO on 2.x', [d.pro2, d.pro15]], ['StompStation PRO on 1.5', [d.pro15]],
+];
+const playsT = `<div class="dtable" style="grid-template-columns:220px 1fr">
+  <div class="h">Connected</div><div class="h">Plays</div>
+  ${plays.map(([p, list], i) => `<div class="d ${i === plays.length - 1 ? 'last' : ''}"><b>${p}</b></div><div class="d ${i === plays.length - 1 ? 'last' : ''}" style="gap:6px">${list.map(x => TL.dm(x)).join('')}${p.endsWith('2.x') ? '<span class="muted">a 1.5 tone plays with 2.x’s default chain</span>' : p.endsWith('1.5') ? '<span class="muted">a 2.x tone needs the update</span>' : ''}</div>`).join('')}
+</div>`;
+
+const how = `<div style="font-size:12.5px;line-height:19px;color:var(--text-soft);display:flex;flex-direction:column;gap:8px">
+  <div><b style="color:var(--text)">Kept from a pedal:</b> the library records the pedal it came from, at the moment it is kept.</div>
+  <div><b style="color:var(--text)">Imported or kept before this:</b> an HX document’s input and output say Stomp, Effects or Helix; a PRO preset with a chain layout needs 2.x.</div>
+  <div><b style="color:var(--text)">From TonePush:</b> the device the site lists for the tone, and its firmware for a PRO.</div>
+  <div><b style="color:var(--text)">Publishing</b> uses the same record, so an HX Effects tone is never published as an HX Stomp one.</div></div>`;
+
+TP.mount(`<div class="sheetpage"><div><h1>Device markers</h1><div class="sub">Every tone and setlist says which pedal it is for: the family, then the model. Always, not only when it differs from the pedal connected.</div></div>
+  <div style="display:grid;grid-template-columns:420px 1fr;gap:18px;min-height:0">
+    <div style="display:flex;flex-direction:column;gap:18px">${card('The family, then the model', v)}${card('Whether the connected pedal plays it', states)}${card('How TonePush knows', how)}</div>
+    <div style="display:flex;flex-direction:column;gap:18px;min-width:0">${card('Where it appears', where)}${card('What plays where (TonePush’s rules today)', playsT, 'padding-bottom:16px')}</div>
+  </div></div>`);
+</script></body></html>

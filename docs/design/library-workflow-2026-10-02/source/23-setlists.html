@@ -1,0 +1,72 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · A setlist's slot, auditioned on a click</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css">
+<style>.bcell.play { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); box-shadow: 0 0 0 2px var(--accent-soft); } .bcell.play .x { color: var(--accent); }</style></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+const d = L.DEV;
+
+// Library, Setlists: Album release show against the pedal. A click on 05A
+// plays the setlist's Shimmer Pad, which is not the one on the pedal now.
+const side = TL.hxSide({ aud: true });
+const deck = TL.deck({
+  slot: '01B', name: 'Shimmer Pad',
+  meta: `<span class="acc">${I('volume-2', 's12')}Auditioning, from Album release show</span><span class="sep">·</span><span>its 05A, v2</span>`,
+  snaps: [{ name: 'Pad', on: true }, { name: 'Swell' }, { name: 'Dry' }], tempo: '72.0', undo: false, dirty: false, save: `<span class="btn disabled">Save</span>`,
+});
+const chain = {
+  kind: 'hx', input: { label: 'In', sub: 'Multi' }, output: { label: 'Out', sub: 'Multi' },
+  items: [
+    { t: 'block', b: { name: 'Volume', cat: 'vol', tr: [{ text: 'EXP 1' }] } },
+    { t: 'block', b: { name: 'Simple Pitch', cat: 'pitch', on: false, tr: [{ fs: 'FS1', led: 'violet' }] } },
+    { t: 'block', b: { name: 'Essex A30', cat: 'amp', sel: true } },
+    { t: 'block', b: { name: 'Adriatic Swell', cat: 'delay', stereo: true } },
+    { t: 'block', b: { name: 'Searchlights', cat: 'reverb', stereo: true, tr: [{ fs: 'FS3', led: 'turquoise' }] } },
+  ],
+};
+const essex = [
+  { label: 'Drive', val: '3.0', frac: 0.30, def: 0.35 }, { label: 'Bass', val: '4.5', frac: 0.45, def: 0.44 }, { label: 'Cut', val: '6.0', frac: 0.6, def: 0.5 },
+  { label: 'Treble', val: '5.5', frac: 0.55, def: 0.57 }, { label: 'Presence', val: '3.5', frac: 0.35, def: 0.10 }, { label: 'Ch Vol', val: '6.0', frac: 0.6, def: 0.85 },
+  { label: 'Master', val: '9.0', frac: 0.9, def: 1.0 }, { label: 'Sag', val: '5.0', frac: 0.5, def: 0.5 }, { label: 'Hum', val: '5.0', frac: 0.5, def: 0.5 },
+  { label: 'Ripple', val: '5.0', frac: 0.5, def: 0.5 }, { label: 'Bias', val: '6.0', frac: 0.6, def: 0.6 }, { label: 'Bias X', val: '5.0', frac: 0.5, def: 0.5 },
+];
+
+const cards = L.setlists.map((s, i) => {
+  const chip = s.state === 'matches the pedal' ? `<span class="chip ok">${I('check', 's12')}Matches the pedal</span>` : s.state === 'for another pedal' ? `<span class="chip">For StompStation PRO</span>` : `<span class="chip hot">${I('git-compare', 's12')}${s.state[0].toUpperCase() + s.state.slice(1)}</span>`;
+  return `<div class="slrow ${i === 0 ? 'sel' : ''}"><div class="a"><span class="nm">${s.name}</span>${TL.dm(s.dev, { no: s.dev.f !== 'HX' })}</div><div class="m">${s.venue} · ${s.date} · ${s.count}</div><div class="a" style="margin-top:3px">${chip}<span class="faint" style="font-size:11.5px;margin-left:auto">${s.ver}</span></div></div>`;
+}).join('');
+const names = D.hxPresets();
+const diff = { 4: 'diff', 12: 'diff', 26: 'diff', 31: 'diff' };
+let grid = '';
+for (let b = 0; b < 6; b++) {
+  grid += `<div class="bk num">${String(b + 1).padStart(2, '0')}</div>`;
+  for (let k = 0; k < 3; k++) {
+    const i = b * 3 + k, st = diff[i];
+    const play = i === 12;
+    grid += `<div class="bcell ${play ? 'play' : st || 'same'}" style="height:28px"><span class="s">${'ABC'[k]}</span><span class="n">${names[i].name}</span>${play ? `<span class="x">${I('volume-2', 's13')}</span>` : st ? `<span class="x">${I('git-compare', 's13')}</span>` : ''}</div>`;
+  }
+}
+const detail = `<div class="sldetail" style="padding:12px 16px 0"><div class="row" style="gap:10px"><div class="grow" style="min-width:0"><div class="row" style="gap:8px"><span style="font-size:16px;font-weight:600">Album release show</span>${TL.dm(d.stomp)}</div>
+    <div class="pmeta">Lido Rooftop, Berlin · 4 Oct 2026 · v2, captured 4 Oct</div></div>
+    <span class="btn sm">${I('tp-computer')}Capture the pedal as v3</span><span class="btn sm primary">${I('arrow-down-to-line')}Put on HX Stomp…</span></div>
+  <div class="row" style="gap:10px;margin:10px 0 8px;font-size:12.5px;color:var(--text-soft)"><span style="color:var(--hot);display:flex">${I('git-compare', 's14')}</span><span><b style="color:var(--text)">6 slots differ from the pedal.</b> A click plays the setlist’s version; the pedal’s stays where it is.</span><span class="grow"></span><div class="seg" style="height:26px"><span class="s on" style="height:20px">All 42</span><span class="s" style="height:20px">6 that differ</span></div></div>
+  <div class="bankgrid">${grid}</div></div>`;
+
+const bar = TL.abar({
+  text: '<b>Shimmer Pad</b>, the setlist’s 05A, plays in 01B. <b>Plexi Crunch</b> waits.',
+  actions: TL.backBtn('Put Plexi Crunch back') + `<span class="btn sm" style="height:30px">${I('arrow-down-to-line', 's14')}Send to 05A</span>` + TL.keepBtn('Keep in 01B'),
+});
+const lpane = TL.pane({ tab: 'setlists', height: 300, bar, body: `<div class="slist" style="width:${z(240, 270, 320)}px;padding:6px">${cards}</div>${detail}` });
+
+TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board aud" id="board"></div>
+  <section class="pane fold cat-amp" id="pane">${TL.bhead({ name: 'Essex A30' })}<div id="face"></div></section>${lpane}</div></div>`, () => {
+  TP.renderChain(document.getElementById('board'), Object.assign(chain, {
+    head: `<span><b>5</b> blocks</span><span>·</span><span>Path 1</span><span>·</span><span class="acc">${I('volume-2', 's12')}Auditioning Shimmer Pad, from Album release show</span><span class="grow"></span>${TP.legend()}`,
+  }));
+  TL.fitFace(document.getElementById('face'), TL.hxCells(essex), { sizes: [52, 44] });
+});
+</script></body></html>

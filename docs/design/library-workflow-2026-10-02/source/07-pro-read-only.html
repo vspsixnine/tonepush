@@ -1,0 +1,81 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · Auditioning on a StompStation PRO that cannot save</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+
+// A StompStation PRO on firmware 2.2.6, which TonePush plays with but has not
+// verified for saving. A click still auditions: it is a live edit. Keeping it
+// in 03B is a live edit too; writing a slot is what waits.
+const presets = D.proPresets().slice(0, 20);
+presets[7].sel = true; presets[7].dirty = true; presets[7].aud = true;
+const side = TL.sidebar({
+  device: { name: 'StompStation PRO', status: 'Connected · 2.2.6', online: true },
+  listAside: '9 of 60', presets,
+  foot: `<span class="row" style="color:var(--hot)">${I('lock', 's14')}</span><span class="grow ell">Read only</span><span class="iconbtn sm">${I('settings', 's14')}</span>`,
+});
+const deck = TL.deck({
+  slot: '03B', name: 'Shimmer Lead',
+  meta: `<span class="acc">${I('volume-2', 's12')}Auditioning, from your library</span><span class="sep">·</span><span class="hot" style="display:inline-flex;gap:5px;align-items:center">${I('lock', 's12')}Read only on firmware 2.2.6</span>`,
+  tempo: '96.0', undo: false, dirty: false, save: `<span class="btn disabled">Save</span>`,
+});
+
+const d = L.DEV;
+const proTones = [
+  { name: 'Brit Crunch', dev: d.pro2, chain: ['dyn', 'dist', 'amp', 'ir', 'reverb'], song: 'Original', char: 'Drive', rating: 3, added: '27 Sep', ver: 'v1', pedal: '04B', sync: 'same' },
+  { name: 'Glass Wall', dev: d.pro15, chain: ['dyn', 'amp', 'ir', 'eq', 'mod', 'delay', 'reverb'], song: 'Original', char: 'Clean', rating: 4, added: '29 Sep', ver: 'v1', pedal: '01B', sync: 'same' },
+  { name: 'Modern Chug', dev: d.pro2, chain: ['dyn', 'dist', 'amp', 'ir', 'eq'], song: 'Original', char: 'Hi-gain', rating: 3, added: '25 Sep', ver: 'v2', pedal: '03A', sync: 'same' },
+  { name: 'Shimmer Lead', dev: d.pro2, chain: ['dyn', 'dist', 'amp', 'ir', 'delay', 'reverb'], song: 'Low Tide', artist: 'Marlow Kent', char: 'Hi-gain', rating: 4, added: '29 Sep', ver: 'v2', pedal: '03C', sync: 'differs' },
+  { name: 'Twin Clean', dev: d.pro2, chain: ['dyn', 'amp', 'ir', 'mod', 'reverb'], song: 'Original', char: 'Clean', rating: 4, added: '30 Sep', ver: 'v1', pedal: '04A', sync: 'same' },
+  { name: 'Velvet Drive', dev: d.pro2, chain: ['dyn', 'dyn', 'wah!', 'dist', 'amp', 'ir', 'eq', ['mod', 'mod!'], 'delay', 'reverb'], song: 'Low Tide', artist: 'Marlow Kent', char: 'Drive', rating: 5, added: '28 Sep', ver: 'v4', pedal: '03B', sync: 'same', cloud: 'published' },
+];
+const rows = TL.toneRows(proTones, { connected: 'pro2', state: { 'Shimmer Lead': 'play' } });
+const table = TL.table(TL.toneCols(), rows, { scroll: [4, 90] });
+const t = proTones[3];
+const insp = TL.toneInsp(t, {
+  meta: 'Hi-gain · kept 29 Sep', versions: 2,
+  where: TL.wr('volume-2', 'acc', '<span class="acc">Playing in 03B</span>, in place of Velvet Drive')
+    + TL.wr('tp-pedal', 'hot', 'The pedal holds <b>v1</b> in <b>03C</b>')
+    + TL.wr('tp-computer', 'on', 'In your library · <b>v2</b>'),
+});
+const bar = TL.abar({
+  text: '<b>Shimmer Lead</b> plays in 03B. <b>Velvet Drive</b> waits, with its 2 unsaved changes.',
+  actions: TL.backBtn('Put Velvet Drive back') + `<span id="keep">${TL.keepBtn('Keep in 03B')}</span>`,
+});
+const lpane = TL.pane({ tab: 'tones', counts: { tones: 58 }, scopeLabel: 'StompStation PRO', height: z(186, 212, 512), bar, body: table + insp });
+
+const capt = () => `<div class="capt"><div class="k">Model<span class="chip" style="height:17px;font-size:10px;padding:0 5px">05</span></div>
+  <div class="nm">Recto Modern · Ch3</div><div class="mt2">NAM amp slot 5</div>
+  <div class="bt"><span class="btn sm" style="height:24px">${I('library', 's13')}Change${I('chevron-down', 's12')}</span></div></div>`;
+const cells = [{ t: 'fsw', on: true, led: 'var(--c-amp)', label: 'On/Off' }, { t: 'div' },
+  { t: 'html', w: 214, html: capt }, { t: 'div' },
+  { label: 'Gain', val: '7.2', frac: 0.72, def: 0.5 }, { label: 'Low', val: '5.5', frac: 0.55, def: 0.5 },
+  { label: 'Mid', val: '4.6', frac: 0.46, def: 0.5 }, { label: 'Treble', val: '6.4', frac: 0.64, def: 0.5 },
+  { label: 'Volume', val: '−2.0 dB', frac: 0.42, def: 0.5 }];
+const bh = `<div class="bhd"><span class="bwell">${G('amp')}</span><div style="min-width:0"><div class="bname">Amp<span class="chip" style="height:22px;margin-left:6px">${I('lock', 's12')}Fixed in position 7</span></div>
+  <div class="bmeta"><span class="c">Amp</span><span>·</span><span>NAM amp in slot 5</span></div></div></div>`;
+
+const menu = TL.menu({ id: 'keepmenu', w: 318, rows: [
+  { head: 'Keep Shimmer Lead', h: 'on firmware 2.2.6' },
+  { icon: 'tp-pedal', t: 'In 03B, as an edit', k: ['Enter'], cls: 'hov' },
+  { icon: 'arrow-down-to-line', t: 'In another slot…', cls: 'dis', why: 'read only on 2.2.6' },
+  '-',
+  { note: 'TonePush plays and changes presets on 2.2.6 but does not write them yet. Kept in 03B, Shimmer Lead plays until you load another preset; Save, renaming and writing a slot wait for firmware TonePush has verified.' },
+] });
+
+TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board aud" id="board"></div>
+  <section class="pane fold cat-amp" id="pane">${bh}<div id="face"></div></section>${lpane}</div>${menu}</div>`, () => {
+  TP.renderChain(document.getElementById('board'), Object.assign(L.proChain('amp'), {
+    head: `<span><b>11</b> of 14 positions</span><span>·</span><span>3 fixed ${I('lock', 's12')}</span><span>·</span><span class="acc">${I('volume-2', 's12')}Auditioning Shimmer Lead</span><span class="grow"></span>`,
+  }));
+  TL.fitFace(document.getElementById('face'), cells, { sizes: [60, 52, 44] });
+  const k = document.getElementById('keep').getBoundingClientRect();
+  const m = document.getElementById('keepmenu');
+  m.style.left = (k.right - 318) + 'px';
+  m.style.top = (k.bottom + 6) + 'px';
+});
+</script></body></html>

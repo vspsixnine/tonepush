@@ -1,0 +1,57 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · The library under the editor</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+
+// The frame: the pedal and its presets on the left, no page switch; the
+// loaded preset above; the library always below, in a pane of its own.
+const side = TL.hxSide();
+const deck = TL.hxDeck();
+
+// The library: all pedals, scrolled to the loaded preset's tone, which the
+// inspector shows while nothing else is chosen.
+const first = z(10, 10, 2), count = z(4, 6, 14);
+const rows = TL.toneRows(L.tones.slice(first, first + count), { state: { 'Plexi Crunch': 'sel' } });
+const table = TL.table(TL.toneCols(), rows, { scroll: z([34, 40], [44, 56], [30, 300]) });
+const t = L.tone('Plexi Crunch');
+const insp = size === 's' ? '' : TL.toneInsp(t, {
+  versions: 2, meta: 'Drive · kept 12 Sep',
+  where: TL.wr('tp-pedal', 'on', 'Loaded in <b>01B</b> · <span class="hot">3 changes not saved</span>')
+    + TL.wr('tp-computer', 'on', 'In your library as <b>v2</b>', `<span class="btn sm">${I('tp-computer', 's13')}Keep as v3</span>`)
+    + TL.wr('cloud', 'on', 'Published · 1,284 downloads', `<span class="iconbtn sm" title="Open on tonepush.rocks">${I('external-link', 's14')}</span>`),
+  more: size === 'l' ? TL.facts([['Song', 'Original'], ['Part', 'Rhythm'], ['Guitar', 'Les Paul · humbuckers'], ['Tuning', 'E standard'], ['Rating', `<span class="stars">${TP.stars(4)}</span>`], ['Tags', '<span class="chip">stage</span> <span class="chip">crunch</span>']])
+    + `<div class="is"><div class="lbl">Versions</div><div class="vlist"><div class="vr"><b>v2</b><span class="muted">12 Sep</span><span class="grow"></span><span class="chip ok">Current</span></div><div class="vr"><b>v1</b><span class="muted">2 Sep</span><span class="grow"></span><span class="muted" style="font-size:12px">click to hear it</span></div></div></div>` : '',
+});
+const lpane = TL.pane({ tab: 'tones', height: z(186, 232, 512), body: table + insp });
+
+// The editor above it gives the library its height from the block pane, never
+// from the board: the knobs shrink to one row, and the floor's switches stay
+// on the tiles' tags.
+let body;
+const bh = TL.bhead({ name: 'US Double Nrm' });
+if (size === 'l') {
+  body = `<div style="display:grid;grid-template-columns:minmax(0,1fr) 620px;gap:16px;padding:14px 20px;flex:1;min-height:0;align-content:start">
+    <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+      <div class="card" style="padding-bottom:14px">${bh.replace(/<div class="seg lens">[\s\S]*?<\/div><\/div>$/, '</div>')}<div id="face"></div></div>
+      <div class="card"><div class="cardh"><span class="t">Footswitches</span><span class="muted" style="font-size:12px">HX Stomp · Stomp mode</span><span class="grow"></span><span class="chip ghost">${I('cable', 's12')}MIDI CC 4 · Plateaux Mix</span></div>
+        <div style="padding:12px 14px 14px">${TP.fsBoard(D.hxSwitches().map(f => Object.assign(f, { foot: '' })), 5)}</div></div>
+    </div>
+    <div class="card"><div class="cardh">${I('camera', 's14')}<span class="t">Snapshots</span><span class="muted" style="font-size:12px">what changes when you switch</span><span class="grow"></span><span class="btn sm ghost">${I('copy')}Copy Chorus to…</span></div>
+      <div style="padding:4px 0 8px">${TP.snapMatrix(Object.assign(D.hxSnaps(), { colW: 104 }))}</div></div></div>`;
+} else {
+  body = `${bh}<div id="face"></div>`;
+}
+
+TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board" id="board"></div>
+  <section class="pane fold cat-amp" id="pane">${body}</section>${lpane}</div></div>`, () => {
+  TP.renderChain(document.getElementById('board'), Object.assign(D.hxChain(), { head: TL.hxBoardHead() }));
+  const face = document.getElementById('face');
+  if (size === 'l') face.outerHTML = TP.face(TL.hxCells(D.amp), face.parentElement.clientWidth - 40, { sizes: [76], style: 'margin:0 20px;background:var(--bg);' });
+  else TL.fitFace(face, TL.hxCells(D.amp), { sizes: [52, 44] });
+});
+</script></body></html>

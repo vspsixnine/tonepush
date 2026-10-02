@@ -1,0 +1,127 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · Right-click menus</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I } = TP;
+// One order everywhere: hear it, put it on the pedal, keep it; then name and
+// versions; then out of the computer; then the one that destroys, last, red.
+const M = (cap, rows, note) => `<div class="mcardref"><div class="mcap">${cap}</div>${TL.menu({ w: 286, rows, style: 'position:relative' })}${note ? `<div class="muted" style="font-size:11.5px;line-height:16px;margin:8px 2px 0">${note}</div>` : ''}</div>`;
+const menus = [
+  M('A library tone', [
+    { head: 'Dream Pop', h: 'HX Stomp · library' },
+    { icon: 'volume-2', t: 'Play on the HX Stomp', k: ['Space'] },
+    { icon: 'arrow-down-to-line', t: 'Put in a slot…', k: ['Ctrl', 'Enter'] },
+    '-',
+    { icon: 'text-cursor-input', t: 'Rename', k: ['F2'] },
+    { icon: 'history', t: 'Versions', sub: true },
+    '-',
+    { icon: 'cloud-upload', t: 'Publish on TonePush…' },
+    { icon: 'external-link', t: 'Open on tonepush.rocks' },
+    { icon: 'file-down', t: 'Export…' },
+    { icon: 'folder-open', t: 'Show in folder' },
+    '-',
+    { icon: 'trash-2', t: 'Delete…', cls: 'danger', k: ['Del'] },
+  ], 'Right-click selects without playing. A tone for another pedal keeps every item but Play and Put in a slot, which say why.'),
+  M('Several library tones', [
+    { head: '3 tones', h: 'in your library' },
+    { icon: 'arrow-down-to-line', t: 'Put in slots…', k: ['Ctrl', 'Enter'] },
+    '-',
+    { icon: 'cloud-upload', t: 'Publish 3 on TonePush…' },
+    { icon: 'file-down', t: 'Export 3…' },
+    '-',
+    { icon: 'trash-2', t: 'Delete 3 tones…', cls: 'danger', k: ['Del'] },
+  ], 'Ctrl-click and Shift-click choose without playing; the tone that was playing goes on playing.'),
+  M('A setlist', [
+    { head: 'Album release show', h: 'HX Stomp · 42' },
+    { icon: 'arrow-down-to-line', t: 'Put on the HX Stomp…' },
+    { icon: 'tp-computer', t: 'Capture the pedal as v3' },
+    '-',
+    { icon: 'text-cursor-input', t: 'Rename', k: ['F2'] },
+    { icon: 'history', t: 'Versions', sub: true },
+    { icon: 'file-down', t: 'Export…' },
+    { icon: 'cloud-upload', t: 'Publish on TonePush…', srv: true, cls: 'dis', why: 'needs S6' },
+    '-',
+    { icon: 'trash-2', t: 'Delete…', cls: 'danger', k: ['Del'] },
+  ]),
+  M('One slot of a setlist', [
+    { head: '05A Shimmer Pad', h: 'Album release show' },
+    { icon: 'volume-2', t: 'Play on the HX Stomp', k: ['Space'] },
+    { icon: 'arrow-down-to-line', t: 'Send to 05A' },
+    { icon: 'arrow-down-to-line', t: 'Put in another slot…', k: ['Ctrl', 'Enter'] },
+    '-',
+    { icon: 'tp-computer', t: 'Show in your tones' },
+  ], 'A setlist is a record of a night: its slots are never edited in place.'),
+  M('A preset on the pedal', [
+    { head: '05B Chime Clean', h: 'on the pedal' },
+    { icon: 'text-cursor-input', t: 'Rename', k: ['F2'] },
+    { icon: 'copy', t: 'Copy', k: ['Ctrl', 'C'] },
+    { icon: 'clipboard-paste', t: 'Paste Plexi Crunch here', k: ['Ctrl', 'V'] },
+    '-',
+    { icon: 'tp-computer', t: 'Keep in your library', k: ['Ctrl', 'D'] },
+    { icon: 'cloud-upload', t: 'Publish on TonePush…' },
+    { icon: 'download', t: 'Save to file…' },
+    { icon: 'upload', t: 'Load from file…' },
+    { icon: 'star', t: 'Add to favourites' },
+    '-',
+    { icon: 'trash-2', t: 'Empty this slot…', cls: 'danger' },
+  ], 'As built, with Publish added and the keys proposed. A click loads the preset, as today.'),
+  M('A tone on TonePush', [
+    { head: 'Glass Cathedral', h: 'by Mira Holt' },
+    { icon: 'volume-2', t: 'Play on the HX Stomp', k: ['Space'] },
+    { icon: 'arrow-down-to-line', t: 'Put in a slot…', k: ['Ctrl', 'Enter'] },
+    { icon: 'cloud-download', t: 'Keep in your library', k: ['Ctrl', 'D'] },
+    '-',
+    { icon: 'history', t: 'Versions', sub: true },
+    { icon: 'external-link', t: 'Open on tonepush.rocks' },
+    { icon: 'link', t: 'Copy link' },
+  ], 'Someone else’s tone: nothing to rename or delete.'),
+  M('Yours on TonePush, today', [
+    { head: 'Slapback Twang', h: 'yours · v2' },
+    { icon: 'volume-2', t: 'Play on the HX Stomp', k: ['Space'] },
+    { icon: 'arrow-down-to-line', t: 'Put in a slot…', k: ['Ctrl', 'Enter'] },
+    { icon: 'tp-computer', t: 'Show in your tones' },
+    '-',
+    { icon: 'cloud-upload', t: 'Publish v3 from your library…' },
+    { icon: 'text-cursor-input', t: 'Rename on TonePush…' },
+    { icon: 'history', t: 'Make another version current', sub: true },
+    '-',
+    { icon: 'external-link', t: 'Open on tonepush.rocks' },
+    { icon: 'link', t: 'Copy link' },
+  ], 'All of it works with today’s API: renaming and making a version current publish the same file again.'),
+  M('Yours on TonePush, with the server work', [
+    { head: 'Slapback Twang', h: 'yours · v2' },
+    { icon: 'volume-2', t: 'Play on the HX Stomp', k: ['Space'] },
+    { icon: 'arrow-down-to-line', t: 'Put in a slot…', k: ['Ctrl', 'Enter'] },
+    { icon: 'tp-computer', t: 'Show in your tones' },
+    '-',
+    { icon: 'cloud-upload', t: 'Publish v3 from your library…' },
+    { icon: 'text-cursor-input', t: 'Rename on TonePush', k: ['F2'] },
+    { icon: 'history', t: 'Make another version current', sub: true },
+    { icon: 'eye-off', t: 'Hide from everyone', srv: true },
+    '-',
+    { icon: 'external-link', t: 'Open on tonepush.rocks' },
+    { icon: 'link', t: 'Copy link' },
+    '-',
+    { icon: 'trash-2', t: 'Delete from TonePush…', cls: 'danger', k: ['Del'], srv: true },
+  ], '<span class="srvnote">needs a server change (S3, S4)</span>'),
+  M('Keep, on a PRO not protected yet', [
+    { head: 'Keep Shimmer Lead', h: 'from your library' },
+    { icon: 'tp-pedal', t: 'In 03B, as an edit', k: ['Enter'] },
+    { icon: 'arrow-down-to-line', t: 'In another slot…', cls: 'dis', why: 'waits for a backup' },
+    '-',
+    { icon: 'shield-check', t: 'Back up to unlock saving' },
+  ], 'The rollback guard, said where the question is asked. On firmware not verified for saving the reason reads “read only on 2.2.6” and there is no backup offer.'),
+  M('Keep, from TonePush', [
+    { head: 'Keep Glass Cathedral', h: 'by Mira Holt' },
+    { icon: 'tp-pedal', t: 'In 01B, as an edit', k: ['Enter'] },
+    { icon: 'arrow-down-to-line', t: 'In another slot…', k: ['Ctrl', 'Enter'] },
+    { icon: 'cloud-download', t: 'In your library only', k: ['Ctrl', 'D'] },
+  ], 'Enter keeps what you hear in the slot it plays in, wherever it came from. A tone from TonePush kept on the pedal goes into your library too, so the pedal never holds a tone the library does not know.'),
+];
+
+TP.mount(`<div class="sheetpage" style="gap:16px"><div><h1>Right-click menus</h1><div class="sub">The same order on every surface: hear it, put it on the pedal, keep it; then its name and versions; then out of this computer; delete last, in red. The keys work without the menu.</div></div>
+  <div style="display:grid;grid-template-columns:repeat(5, 286px);column-gap:22px;row-gap:20px;align-items:start;justify-content:space-between">${menus.join('')}</div></div>`);
+</script></body></html>

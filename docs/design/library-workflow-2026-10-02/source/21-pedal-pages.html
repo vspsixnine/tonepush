@@ -1,0 +1,92 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · The pedal's own pages, opened from the pedal</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+
+// The device card is the pedal: clicking it shows the pedal's own pages where
+// the editor was, with their tabs in the page's head, next to what they
+// switch. The library folds to its tabs, which still take drops.
+const q = new URLSearchParams(location.search);
+const pro = q.get('pro') === '1';
+let side, mini, head, page, menu = '';
+if (!pro) {
+  side = TL.hxSide({ side: { devSel: true } });
+  mini = TP.minideck({ slot: '01B', name: 'Plexi Crunch', dirty: true, chain: ['wah!', 'dist', 'amp', ['cab', 'cab'], 'delay!', 'reverb'], snap: 'Chorus' })
+    .replace(`${I('arrow-up-right')}Edit`, `${I('arrow-left')}Back to the preset<span class="kbd">Esc</span>`);
+  head = `<div class="phead" style="padding-bottom:12px"><span class="bwell" style="--cat:var(--text-soft);background:var(--raised);border-color:var(--line-strong)">${I('tp-pedal', 's20')}</span>
+    <div style="min-width:0"><div class="ph1">HX Stomp</div><div class="phsub ell">Firmware 3.80 · 126 presets in one setlist · 4 of 128 IR slots used</div></div><span class="grow"></span>
+    <span class="btn sm ghost">${I('power')}Let the pedal go</span></div>
+    <div class="tabs">${[['Backups', ''], ['Impulse responses', 4], ['Favorite blocks', 3], ['Global EQ', ''], ['Settings', ''], ['Activity', '']]
+      .map(([t, n], i) => `<span class="t ${i === 0 ? 'on' : ''}">${t}${n !== '' ? ` <span class="n">${n}</span>` : ''}</span>`).join('')}</div>`;
+
+  const hist = [
+    ['Today, 14:02', 'Kept current', 'Refreshed after saving 01B', true],
+    ['Today, 13:58', 'Pedal connected', 'As last seen before it connected'],
+    ['28 Sep, 18:02', 'Before a setlist', 'Before Album release show was written', false, true],
+    ['27 Sep, 21:11', 'Pedal connected', 'As last seen before it connected'],
+    ['22 Sep, 10:02', 'Saved to a file', 'hx-stomp-before-tour.hxbundle'],
+    ['15 Sep, 19:40', 'Pedal connected', 'As last seen before it connected'],
+  ];
+  const table = `<div class="card" style="overflow:hidden"><div class="th" style="height:34px;padding:0 20px"><span class="c" style="width:${z(120, 150, 180)}px">When</span><span class="c" style="width:${z(250, 270, 360)}px">Why it was taken</span><span class="c" style="width:150px">Holds</span><span class="c">Checked</span></div>
+    ${hist.map(([w, why, sub, cur, sel]) => `<div class="tr ${sel ? 'sel' : ''}" style="height:44px;padding:0 20px"><span class="c" style="width:${z(120, 150, 180)}px;color:var(--text)">${w}</span>
+      <span class="c" style="width:${z(250, 270, 360)}px;line-height:16px"><span style="color:var(--text)">${why}</span>${cur ? ' <span class="chip ok" style="height:18px">Current</span>' : ''}<br><span class="muted" style="font-size:11.5px">${sub}</span></span>
+      <span class="c muted" style="width:150px">42 presets · 4 IRs</span><span class="c ok row" style="gap:6px;color:var(--ok)">${I('check', 's13')}Complete</span></div>`).join('')}</div>`;
+  const banner = `<div class="banner ok" style="margin-bottom:14px"><span class="bi">${I('shield-check', 's18')}</span><div class="grow"><div class="bt">Everything on this HX Stomp is backed up</div>
+    <div class="bd">TonePush reads the whole pedal when it connects and keeps that copy current after every save: 126 presets, 4 impulse responses and 154 settings, byte for byte.</div>
+    <div class="row" style="gap:8px;margin-top:10px"><span class="btn sm">${I('download')}Back up to a file…</span><span class="btn sm">${I('history')}Restore from a file…</span></div></div></div>`;
+  const insp = size === 's' ? '' : `<aside style="width:${z(0, 320, 380)}px;flex:none;border-left:1px solid var(--line);padding:16px 16px">
+    <div style="font-size:15px;font-weight:600">28 Sep, 18:02</div><div class="muted" style="font-size:12px;margin-top:2px">Taken before Album release show was written</div>
+    <div class="caps" style="margin:18px 0 8px">Against the pedal now</div>
+    <div class="row" style="gap:8px;font-size:12.5px;color:var(--text-soft)">${I('git-compare', 's14')}<span><b style="color:var(--text)">6 presets differ.</b> 120 are the same.</span></div>
+    <div style="margin-top:10px;display:flex;flex-direction:column;gap:9px;font-size:12.5px">${[['02B', 'Ambient Swell', 'edited since'], ['05A', 'Shimmer Pad', 'edited since'], ['09C', 'Crunch Stack', 'edited since'], ['11B', 'Sparkle Verb', 'was Night Verb'], ['14A', 'Reverse Swell', 'added since']]
+      .map(([s, n, w]) => `<div class="row" style="gap:10px"><span class="muted num" style="width:28px">${s}</span><span style="color:var(--text)">${n}</span><span class="muted">${w}</span></div>`).join('')}</div>
+    <span class="btn" style="width:100%;justify-content:center;margin-top:18px">${I('history')}Restore the whole pedal…</span></aside>`;
+  page = `<div style="flex:1;min-height:0;display:flex"><div style="flex:1;min-width:0;padding:16px 16px 0 20px;overflow:hidden">${banner}${table}</div>${insp}</div>`;
+
+} else {
+  // The StompStation PRO's pages: its NAM and IR libraries, backups, settings
+  // and firmware, chosen here from the device card's menu.
+  const presets = D.proPresets().slice(0, 20);
+  presets[7].sel = true; presets[7].dirty = true;
+  side = TL.sidebar({ device: { name: 'StompStation PRO', status: 'Connected · 2.0.10', online: true }, devSel: true, listAside: '9 of 60', presets,
+    foot: `<span class="ok row">${I('shield-check', 's14')}</span><span class="grow ell">Protected · backup 14:02</span><span class="iconbtn sm">${I('settings', 's14')}</span>` });
+  mini = TP.minideck({ slot: '03B', name: 'Velvet Drive', dirty: true, chain: ['dyn', 'pitch!', 'dyn', 'dist', 'amp', 'ir', 'eq', 'mod!', ['delay', 'reverb']] })
+    .replace(`${I('arrow-up-right')}Edit`, `${I('arrow-left')}Back to the preset<span class="kbd">Esc</span>`);
+  head = `<div class="phead" style="padding-bottom:12px"><span class="bwell" style="--cat:var(--text-soft);background:var(--raised);border-color:var(--line-strong)">${I('tp-pedal', 's20')}</span>
+    <div style="min-width:0"><div class="ph1">StompStation PRO</div><div class="phsub ell">Firmware 2.0.10 · 24 of 60 preset slots used · USB serial</div></div><span class="grow"></span>
+    <span class="btn sm ghost">${I('power')}Let the pedal go</span></div>
+    <div class="tabs">${[['Backups', ''], ['NAM amps', 14], ['NAM drives', 9], ['Impulse responses', 11], ['Settings', ''], ['Firmware', '']]
+      .map(([t, n], i) => `<span class="t ${i === 1 ? 'on' : ''}">${t}${n !== '' ? ` <span class="n">${n}</span>` : ''}</span>`).join('')}</div>`;
+  const used = { 1: 6, 2: 4, 3: 3, 4: 2 };
+  const rows = D.nams.slice(0, 11).map(n => `<div class="tr ${n.n === 2 ? 'sel' : ''}" style="height:34px;padding:0 20px"><span class="c muted num" style="width:60px">${String(n.n).padStart(2, '0')}</span>
+    <span class="c row" style="width:220px;gap:8px;color:var(--text);font-weight:600"><span class="cat-amp" style="color:var(--cat);display:flex">${G('amp', 's14')}</span>${n.name}</span>
+    <span class="c" style="width:190px">${n.gear}</span><span class="c" style="width:96px">${n.arch}</span><span class="c ${used[n.n] ? '' : 'faint'}">${used[n.n] ? used[n.n] + ' presets' : 'none'}</span></div>`).join('');
+  const table = `<div class="row" style="gap:10px;margin-bottom:12px"><span style="font-size:13px"><b>14</b> of 30 slots</span><span class="muted" style="font-size:12.5px">· 10 not used by any preset</span><span class="grow"></span>
+    <div class="field" style="width:190px;height:28px">${I('search')}<span>Search NAM amps</span></div><span class="btn sm">${I('upload')}Import .nam files…</span></div>
+    <div class="card" style="overflow:hidden"><div class="th" style="height:32px;padding:0 20px"><span class="c" style="width:60px">Slot</span><span class="c" style="width:220px">Name</span><span class="c" style="width:190px">Captured gear</span><span class="c" style="width:96px">WaveNet</span><span class="c">Used by</span></div>${rows}</div>`;
+  const insp = `<aside style="width:320px;flex:none;border-left:1px solid var(--line);padding:16px">
+    <div class="row" style="gap:10px"><span class="bwell cat-amp" style="width:36px;height:36px">${G('amp')}</span><div><div style="font-size:15px;font-weight:600">AC30 TB · Top Boost</div><div class="muted" style="font-size:12px">NAM amp · slot 2 · 1.9 MB</div></div></div>
+    <div class="caps" style="margin:18px 0 8px">Used by 4 presets</div>
+    <div style="display:flex;flex-direction:column;gap:8px;font-size:12.5px">${[['01B', 'Glass Wall'], ['02A', 'Stereo Swirl'], ['05B', 'Rotary Blues'], ['06A', 'Spring Surf']].map(([s2, n]) => `<div class="row" style="gap:10px"><span class="muted num" style="width:28px">${s2}</span><span style="color:var(--text)">${n}</span><span class="grow"></span><span class="muted">Amp</span></div>`).join('')}</div>
+    <div class="row" style="gap:8px;margin-top:16px"><span class="btn sm">${I('download')}Export .nam</span><span class="btn sm disabled">Rename</span><span class="btn sm disabled">Remove</span></div></aside>`;
+  page = `<div style="flex:1;min-height:0;display:flex"><div style="flex:1;min-width:0;padding:16px 16px 0 20px;overflow:hidden">${table}</div>${insp}</div>`;
+  menu = TL.menu({ x: 10, y: 66, w: 236, rows: [
+    { head: 'StompStation PRO', h: 'connected' },
+    { icon: 'history', t: 'Backups' },
+    { icon: 'cpu', t: 'NAM amps', h: '14', cls: 'hov' },
+    { icon: 'cpu', t: 'NAM drives', h: '9' },
+    { icon: 'file-audio', t: 'Impulse responses', h: '11' },
+    { icon: 'sliders-horizontal', t: 'Settings' },
+    { icon: 'package-check', t: 'Firmware' },
+    '-',
+    { icon: 'power', t: 'Let the pedal go' },
+  ] });
+}
+const lpane = TL.pane({ tab: 'tones', closed: true, closedRight: `<span class="muted" style="font-size:12px;margin-right:6px">Library</span><span class="kbdk" style="margin-right:8px">Ctrl L</span>` });
+TL.mount(`<div class="win">${side}<div class="main">${mini}${head}${page}${lpane}</div>${menu}</div>`);
+</script></body></html>

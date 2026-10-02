@@ -1,0 +1,65 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TonePush · A library tone, auditioned on a click</title>
+<link rel="stylesheet" href="../../redesign-2026-10-01/source/assets/app.css"><link rel="stylesheet" href="assets/lib.css"></head><body>
+<script src="../../redesign-2026-10-01/source/assets/icons.js"></script><script src="assets/icons-extra.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/data.js"></script><script src="assets/data-lib.js"></script>
+<script src="../../redesign-2026-10-01/source/assets/kit.js"></script><script src="assets/lib.js"></script>
+<script>
+TP.setup();
+const { I, G, z } = TP;
+const size = TP.size();
+const q = new URLSearchParams(location.search);
+const menu = q.get('menu') === 'keep';
+
+// One click on Dream Pop in the library: the pedal plays it now, in the edit
+// buffer of the preset that is loaded. Plexi Crunch and its three unsaved
+// changes are set aside, byte for byte, until Put back or Keep.
+const side = TL.hxSide({ aud: true });
+const deck = TL.deck({
+  slot: '01B', name: 'Dream Pop',
+  meta: `<span class="acc">${I('volume-2', 's12')}Auditioning, from your library</span>${size === 's' ? '' : '<span class="sep">·</span><span>Plexi Crunch is set aside</span>'}`,
+  snaps: [{ name: 'Clean', on: true }, { name: 'Wide' }, { name: 'Lead' }], tempo: '92.0', undo: false, dirty: false,
+  save: `<span class="btn disabled" title="Keep or put back the audition first">Save</span>`,
+});
+
+const first = z(3, 2, 0), count = z(4, 6, 14);
+const rows = TL.toneRows(L.tones.slice(first, first + count), { state: { 'Dream Pop': 'play' } });
+const table = TL.table(TL.toneCols(), rows, { scroll: z([30, 40], [22, 56], [30, 300]) });
+const t = L.tone('Dream Pop');
+const insp = size === 's' ? '' : TL.toneInsp(t, {
+  meta: 'Clean · kept 23 Sep',
+  where: TL.wr('volume-2', 'acc', '<span class="acc">Playing in 01B</span>, in place of Plexi Crunch')
+    + TL.wr('tp-pedal', 'on', 'Already in <b>13A</b> on the pedal', `<span class="btn sm ghost">Go to 13A</span>`)
+    + TL.wr('tp-computer', 'on', 'In your library · <b>v1</b>')
+    + TL.wr('cloud', 'on', 'Published · 455 downloads', `<span class="iconbtn sm" title="Open on tonepush.rocks">${I('external-link', 's14')}</span>`),
+});
+
+const bar = TL.abar({
+  text: size === 's' ? '<b>Dream Pop</b> in 01B · Plexi Crunch set aside'
+    : '<b>Dream Pop</b> is playing in 01B. <b>Plexi Crunch</b> waits, with its 3 unsaved changes.',
+  actions: TL.backBtn(size === 's' ? 'Put back' : 'Put Plexi Crunch back') + `<span id="keep">${TL.keepBtn('Keep in 01B', { kbd: size !== 's' })}</span>`,
+});
+const lpane = TL.pane({ tab: 'tones', height: z(186, 232, 512), bar, body: table + insp });
+
+const bh = TL.bhead({ name: 'US Deluxe Nrm' });
+const keepMenu = !menu ? '' : TL.menu({ id: 'keepmenu', w: 300, rows: [
+  { head: 'Keep Dream Pop', h: 'from your library' },
+  { icon: 'tp-pedal', t: 'In 01B, as an edit', k: ['Enter'] },
+  { icon: 'arrow-down-to-line', t: 'In another slot…', k: ['Ctrl', 'Enter'], cls: 'hov' },
+  '-',
+  { note: 'In 01B, Save then writes it over Plexi Crunch, and Undo still brings Plexi Crunch back. Another slot is written once you confirm which, and Plexi Crunch comes back with its changes.' },
+] });
+
+TL.mount(`<div class="win">${side}<div class="main">${deck}<div class="board aud" id="board"></div>
+  <section class="pane fold cat-amp" id="pane">${bh}<div id="face"></div></section>${lpane}</div>${keepMenu}</div>`, () => {
+  TP.renderChain(document.getElementById('board'), Object.assign(L.dreamPopChain(), {
+    head: `<span><b>5</b> blocks</span><span>·</span><span>Path 1</span><span>·</span><span class="acc">${I('volume-2', 's12')}Auditioning Dream Pop</span><span class="grow"></span>${TP.legend()}`,
+  }));
+  TL.fitFace(document.getElementById('face'), TL.hxCells(L.deluxe), { sizes: [52, 44] });
+  if (menu) {
+    const k = document.getElementById('keep').getBoundingClientRect();
+    const m = document.getElementById('keepmenu');
+    m.style.left = (k.right - 300) + 'px';
+    m.style.top = (k.bottom + 6) + 'px';
+  }
+});
+</script></body></html>
