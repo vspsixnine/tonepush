@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use voidx_proto::blob::{chunk_count, decode_hex};
-use voidx_proto::{Command, Frame, NodeDescription, NodePath, NodeTree};
+use voidx_proto::{router, Command, Frame, NodeDescription, NodePath, NodeTree, Router};
 
 use crate::session::Session;
 use crate::{values_equivalent, Error, Link, Notification, Result};
@@ -390,6 +390,29 @@ impl<L: Link> Device<L> {
             });
         }
         Ok(())
+    }
+
+    /// The chain on firmware 2.x, as the pedal holds it now.
+    pub fn read_router(&mut self) -> Result<Router> {
+        let path = NodePath::new(router::PATH)?;
+        let value = self.read_value(path.clone())?;
+        Router::from_value(&value).map_err(|error| Error::InvalidResponse {
+            subject: path.to_string(),
+            detail: error.to_string(),
+        })
+    }
+
+    /// Write a whole chain once and read back what the pedal made of it.
+    ///
+    /// The pedal answers a router write by echoing the request, whether it
+    /// applied it, adjusted it (a fixed block kept in its place, a block
+    /// written twice kept once) or ignored it, so the echo proves only that
+    /// the write arrived: the chain read afterwards is the result. Like any
+    /// edit under `root\app` it changes the live preset only, so live edits
+    /// are enough.
+    pub fn write_router(&mut self, chain: &Router) -> Result<Router> {
+        self.write_value(NodePath::new(router::PATH)?, chain.to_value())?;
+        self.read_router()
     }
 
     /// Persist the current live state under the supplied preset name.
@@ -997,6 +1020,76 @@ mod tests {
             Err(Error::WriteRefused(_))
         ));
         assert!(device.save_preset("Mine").is_err());
+    }
+
+    /// A chain is written once and read back, and the result is what the
+    /// pedal read back: here it kept the amp in its fixed position and
+    /// dropped the copy written elsewhere, while echoing the request as
+    /// sent.
+    #[test]
+    fn a_chain_is_written_once_and_the_pedals_reading_is_the_result() {
+        let asked = r#"[["root\\app\\amp","p","root\\app\\amp","s",""]]"#;
+        let kept = r#"[["root\\app\\amp","p","","s",""]]"#;
+        let mut frames = identity_frames("2.2.6");
+        frames.extend_from_slice(format!("root\\app\\router:{{\"value\":{asked}}}\0").as_bytes());
+        frames.extend_from_slice(format!("root\\app\\router:{{\"value\":{kept}}}\0").as_bytes());
+        let link = Scripted {
+            input: Cursor::new(frames),
+            output: vec![],
+        };
+        let mut device = Device::connect(link).unwrap();
+        device.enable_live_edits().unwrap();
+        let chain = Router::from_value(&serde_json::from_str::<Value>(asked).unwrap()).unwrap();
+        let read = device.write_router(&chain).unwrap();
+        assert_eq!(
+            read.to_value(),
+            serde_json::from_str::<Value>(kept).unwrap()
+        );
+        let sent = device.disconnect().output;
+        let identity = identity_requests();
+        assert_eq!(
+            String::from_utf8_lossy(&sent[identity.len()..]),
+            format!("write root\\app\\router:{{\"value\":{asked}}}\0read root\\app\\router\0")
+        );
+    }
+
+    /// A pedal opened read only, without live edits, is sent nothing.
+    #[test]
+    fn a_chain_is_not_written_without_live_edits() {
+        let link = Scripted {
+            input: Cursor::new(identity_frames("2.2.6")),
+            output: vec![],
+        };
+        let mut device = Device::connect(link).unwrap();
+        let chain = Router::from_value(&serde_json::json!([["", "s", ""]])).unwrap();
+        assert!(matches!(
+            device.write_router(&chain),
+            Err(Error::WriteRefused(_))
+        ));
+        let sent = device.disconnect().output;
+        assert!(!String::from_utf8_lossy(&sent).contains("router"));
+    }
+
+    /// An answer that is not a row is a broken answer, not an empty chain.
+    #[test]
+    fn a_chain_that_reads_back_as_anything_else_is_an_error() {
+        let mut frames = identity_frames("2.0.10");
+        frames.extend_from_slice(b"root\\app\\router:{\"value\":\"idle\"}\0");
+        let link = Scripted {
+            input: Cursor::new(frames),
+            output: vec![],
+        };
+        let mut device = Device::connect(link).unwrap();
+        assert!(matches!(
+            device.read_router(),
+            Err(Error::InvalidResponse { .. })
+        ));
+    }
+
+    /// What connecting asks for, before anything a test does.
+    fn identity_requests() -> Vec<u8> {
+        b"read root\\sys\\_name\0read root\\sys\\_ver\0read root\\sys\\_arch\0read root\\sys\\_license\0"
+            .to_vec()
     }
 
     #[test]
