@@ -27,7 +27,8 @@ The common workflow is the same whichever supported pedal is connected:
 
 - **Your whole rig at a glance.** Modelled blocks and knobs are laid out like a
   pedalboard. HX routing branches where the hardware can branch; the PRO shows
-  the fixed chain and algorithms its live schema advertises.
+  the chain its live schema advertises, fixed on 1.5.12 and routed on 2.x,
+  with its parallel banks.
 - **Editing.** Search and swap models, turn the same knobs, use Tap tempo, and
   undo, redo, or save from the same controls and keyboard shortcuts.
 - **One library.** Keep native presets locally, freeze a whole pedal as an

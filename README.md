@@ -55,9 +55,12 @@ operation against the hardware:
 For the StompStation PRO, TonePush keeps the same preset-list, signal-chain,
 model-shelf and pedal-knob design instead of reproducing VoidX Control's UI:
 
-- **Native live editing.** The pedal describes its own fixed chain and every
+- **Native live editing.** The pedal describes its own chain and every
   control. TonePush validates edits against that live schema, while using the
-  same colored block tiles, category art and knob grid as the HX editor.
+  same colored block tiles, category art and knob grid as the HX editor. On
+  firmware 2.x the chain is drawn as the pedal routes it, with free positions,
+  fixed blocks and parallel banks, and blocks can be added, moved, replaced,
+  removed and run in parallel.
 - **All device libraries.** Select, save, rename, reorder, import, export and
   clear presets; manage NAM amp and drive models; import/export mono IRs or
   pair two slots as a stereo WAV. Uploads are acknowledged chunk by chunk and

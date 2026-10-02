@@ -41,7 +41,8 @@ can still be inspected without pretending its write behavior is unchanged.
 
 The Edit page draws the PRO's chain on the same board as an HX's: its blocks
 as tiles between the input and output jacks, in the pedal's fixed order on
-firmware 1.5.12. A tile says what its block holds:
+firmware 1.5.12, and as the pedal routes them on 2.x (below). A tile says what
+its block holds:
 
 - Compressor shows its `Dyn` or `Studio` mode.
 - Pitch, modulation, and reverb show their selected algorithms.
@@ -58,6 +59,50 @@ go to the live edit buffer and are audible immediately. The line under the
 preset's name says when the edit buffer differs from the saved preset; Save
 commits it. On a large window the pedal's protection and what your library
 knows of the preset sit beside the block.
+
+### The chain on firmware 2.x
+
+Firmware 2.x replaced the fixed chain with a router: fourteen positions, each
+holding a block or nothing, joined in series or in parallel. The board draws
+it as the pedal reports it:
+
+- An empty position is a narrow dashed slot. Click its **+** to choose a block
+  for it from the ones the chain does not hold, by category.
+- The amp, the delay and the reverb are fixed in their positions and wear a
+  lock.
+- Positions joined in parallel are a bank, stacked as lanes between a split and
+  a sum. Every block in a bank gets the same input, and their outputs are added
+  together.
+
+To change the chain:
+
+- Drag a block onto another position to swap the two; an empty position takes
+  it.
+- Point at the wire between two positions, or between two lanes of a bank, and
+  click the chip that appears to run them in parallel, or in series again.
+- Right-click a block to replace it, run it in series or in parallel with a
+  neighbour, or take it out of the chain; the block's head under the board
+  offers **Replace** and remove too. A block taken out goes silent and keeps
+  its settings until another preset loads, but they are not saved with the
+  preset.
+- The **…** at the top right of the board loads the default chain, the one
+  every preset saved on 1.5.12 plays, or clears every position that is not
+  fixed.
+
+Each change goes to the pedal as one whole chain, and the board shows the
+chain the pedal reads back afterwards. Undo and Redo take changes back one at
+a time, and a changed chain is an unsaved change until you save. Like turning
+a knob, it changes only the live preset, so it works on firmware TonePush has
+not verified for saving too.
+
+How a bank mixes differs between firmware versions, as read from the firmware
+rather than measured: on 2.0.10 an empty position in a bank passes nothing, so
+its wires are drawn dashed; on 2.2.6 it passes the dry signal, so removing a
+block from a bank there also offers to run the rest of the bank in series.
+
+Saving stores the chain with the preset, and an exported `.vxpreset` keeps it.
+A preset saved on 1.5.12 has no chain of its own and loads the default one,
+which is also what its preview in the library shows.
 
 ## Local tones, setlists, and Cloud
 
