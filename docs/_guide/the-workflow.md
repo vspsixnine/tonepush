@@ -59,7 +59,7 @@ The library's Setlists tab shows each setlist against what is on the pedal now: 
 
 **Put on HX Stomp…** (named after your pedal) writes the whole thing back. It asks first, and says what the write changes: the presets it replaces, the slots it empties and fills, and how many already match. It writes every slot, in order, so tick **Keep the pedal as it is now as a setlist first** if you want what is on it now as a setlist too; nothing is written until that copy is in your library. On an HX pedal the pedal as it was is also kept in its backups (see below).
 
-If you only need one preset out of one, double-click its slot, or right-click it and choose **Send this preset to its slot**.
+A click on a slot plays the setlist's version of it, wherever the pedal's own copy is, with the same bar as a click in your library: **Send to 05A** writes it back into its slot, asking first when that replaces a preset, as does **Send this preset to its slot** in the slot's menu.
 
 ## Changing a setlist
 
@@ -86,6 +86,10 @@ tags; Tone facts include the preset name, part, guitar, tuning and
 device-specific description.
 
 Song search results are musical ideas, not files that can be installed. Open a Song and choose one of its Tones for your device before downloading or installing it. An externally indexed Tone opens its original source; a native Tone downloads its hosted artifact.
+
+In the library's **Cloud**, a click on a Tone plays it on the pedal, the way a click on a tone in your library does: the bar says Loading while its file comes, then Playing. Each file is fetched once a session, and the arrow keys step through the list, playing only the Tone you stop on. TonePush counts a play as an audition, apart from its downloads; keeping a Tone counts as a download. **Keep in library** (Ctrl D) keeps it without touching the pedal, and **Keep in 01B** keeps it on the pedal and in your library too, so the pedal never holds a Tone your library does not know. The details list a Tone's versions: a click on one plays it. A Tone hosted by another catalog, such as Line 6 CustomTone, is not played from here: the bar says where it lives, with **Open**. The versions of a tone in your library play the same way.
+
+With no pedal connected, a click on a tone in your library shows it where the editor would be, read only: its chain, and the faces of its blocks, with **Back to Plug in your pedal** (Esc) to return. A StompStation PRO tone is only described until its pedal is connected, since drawing its chain needs the pedal.
 
 ## Where everything is
 

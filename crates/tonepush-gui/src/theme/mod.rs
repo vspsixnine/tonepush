@@ -904,6 +904,8 @@ icons! {
     ArrowDownToLine => "arrow-down-to-line",
     CloudDownload => "cloud-download",
     Filter => "filter",
+    // A tone shown, not played.
+    Eye => "eye",
 }
 
 impl Icon {

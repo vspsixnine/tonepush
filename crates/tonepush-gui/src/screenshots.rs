@@ -124,10 +124,16 @@ enum Scene {
     HxPutSeveral,
     /// Shimmer Lead auditioned on firmware 2.2.6, Keep's choices open.
     ProReadOnlyKeep,
+    /// Glass Cathedral auditioned from TonePush over 01B Plexi Crunch.
+    HxCloudAudition,
+    /// The setlist's 05A, Shimmer Pad, auditioned from its page.
+    HxSetlistAudition,
+    /// No pedal: Dream Pop clicked, shown where the editor would be.
+    NoDeviceGlimpse,
 }
 
 impl Scene {
-    const ALL: [Scene; 43] = [
+    const ALL: [Scene; 46] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -171,6 +177,9 @@ impl Scene {
         Scene::HxPutAsk,
         Scene::HxPutSeveral,
         Scene::ProReadOnlyKeep,
+        Scene::HxCloudAudition,
+        Scene::HxSetlistAudition,
+        Scene::NoDeviceGlimpse,
     ];
 
     fn name(self) -> &'static str {
@@ -218,6 +227,9 @@ impl Scene {
             Scene::HxPutAsk => "hx-put-ask",
             Scene::HxPutSeveral => "hx-put-several",
             Scene::ProReadOnlyKeep => "pro-read-only-keep",
+            Scene::HxCloudAudition => "hx-cloud-audition",
+            Scene::HxSetlistAudition => "hx-setlist-audition",
+            Scene::NoDeviceGlimpse => "no-device-glimpse",
         }
     }
 
@@ -353,6 +365,122 @@ impl Scene {
                 app.pro.demo_read_only();
                 app.library_device_filter = None;
                 auditioning(app, "Shimmer Lead");
+            }
+            Scene::HxCloudAudition => {
+                hx_stomp(app);
+                cloud_feed(app);
+                app.lib_showing = crate::LibraryView::Cloud;
+                app.cloud_selected = Some(0);
+                app.hearing.arrows = crate::audition::Arrows::Cloud;
+                let (id, name) = {
+                    let tone = &app.cloud_entries[0].discovered.tone.summary;
+                    (tone.id, tone.name.clone())
+                };
+                app.begin_hearing(id, crate::audition::Source::TonePush(id), name);
+                answered(app, id);
+                chain_of(
+                    app,
+                    &[
+                        ("Deluxe Comp", "Dynamics"),
+                        ("US Princess", "Amp"),
+                        ("1x12 Blue Bell", "Cab"),
+                        ("PlastiChorus", "Modulation"),
+                        ("Simple Delay", "Delay"),
+                        ("Glitz", "Reverb"),
+                    ],
+                    &["Verse", "Chorus", "Swell"],
+                    84.0,
+                );
+            }
+            Scene::HxSetlistAudition => {
+                hx_stomp(app);
+                app.lib_showing = crate::LibraryView::Setlists;
+                app.select_setlist_entry(0);
+                // As tall as the sheet's, the bar counted.
+                for (size, height) in [("small", 254.0), ("medium", 300.0), ("large", 714.0)] {
+                    app.config.library_pane.insert(
+                        size.to_owned(),
+                        crate::config::PaneSize {
+                            height,
+                            folded: false,
+                        },
+                    );
+                }
+                let (name, tone) = {
+                    let (_, setlist) = &app.lib_setlists[0];
+                    (setlist.name.clone(), setlist.slots[12].clone())
+                };
+                app.audition_setlist_slot(&name, 12, &tone);
+                let key = app
+                    .hearing
+                    .heard
+                    .as_ref()
+                    .map(|heard| heard.key)
+                    .expect("the slot was asked to play");
+                answered(app, key);
+                chain_of(
+                    app,
+                    &[
+                        ("Deluxe Comp", "Dynamics"),
+                        ("Simple Pitch", "Pitch/Synth"),
+                        ("Essex A30", "Amp"),
+                        ("Adriatic Swell", "Delay"),
+                        ("Searchlights", "Reverb"),
+                    ],
+                    &["Pad", "Swell", "Dry"],
+                    72.0,
+                );
+            }
+            Scene::NoDeviceGlimpse => {
+                app.connection = Connection::Connecting;
+                app.status.clear();
+                app.library_device_filter = None;
+                // Dream Pop's chain, as reading its document would give it.
+                chain_of(
+                    app,
+                    &[
+                        ("Optical Trem", "Modulation"),
+                        ("US Deluxe Nrm", "Amp"),
+                        ("1x12 US Deluxe", "Cab"),
+                        ("Adriatic Delay", "Delay"),
+                        ("Ganymede", "Reverb"),
+                    ],
+                    &["Clean", "Wide", "Lead"],
+                    92.0,
+                );
+                let index = tone_named(app, "Dream Pop");
+                app.choose_tone(index);
+                app.lib_reveal = true;
+                let preview = crate::Preview {
+                    name: "Dream Pop".to_owned(),
+                    line: "Full rig".to_owned(),
+                    chain: std::mem::take(&mut app.chain),
+                    layout: std::mem::take(&mut app.layout),
+                    skipped: Vec::new(),
+                    load: crate::LoadKind::Document(Vec::new()),
+                    dest: 0,
+                    source: ("hxpreset".to_owned(), Vec::new()),
+                };
+                app.hearing.glimpse = Some(crate::audition::Glimpse {
+                    preview,
+                    marker: app.lib_entries[index].marker.clone(),
+                    from: "From your library".to_owned(),
+                });
+                app.hearing.strip = Some(crate::audition::Strip {
+                    icon: crate::theme::Icon::Usb,
+                    words: vec![
+                        ("No pedal is connected, so ".to_owned(), false),
+                        ("Dream Pop".to_owned(), true),
+                        (
+                            " is shown, not played. Plug in your HX Stomp and the next click \
+                             plays."
+                                .to_owned(),
+                            false,
+                        ),
+                    ],
+                    narrow: None,
+                    open: None,
+                });
             }
             Scene::ProPages => {
                 use crate::pro::demo::DemoChain;
@@ -499,6 +627,121 @@ fn auditioning(app: &mut App, name: &str) {
     app.redo_depth = 0;
     app.pro.demo_history_set_aside();
     app.preset_name = name.to_owned();
+}
+
+/// The pedal answering that the tone asked for plays, setting the loaded
+/// preset aside with its unsaved changes and its history.
+fn answered(app: &mut App, key: i64) {
+    app.audition_event(Some(key));
+    app.put_aside_dirty = true;
+    app.dirty = false;
+    app.undo_depth = 0;
+    app.redo_depth = 0;
+    app.pro.demo_history_set_aside();
+}
+
+/// A chain of blocks by model name and category, one path, the amp chosen,
+/// with its snapshots and tempo.
+fn chain_of(app: &mut App, blocks: &[(&str, &str)], snapshots: &[&str], tempo: f32) {
+    use hx_proto::preset::{Kind, Layout, Path};
+    let Some(catalog) = app.catalog.as_ref() else {
+        return;
+    };
+    let number = |name: &str, category: &str| {
+        catalog
+            .models()
+            .find(|model| {
+                model.name == name
+                    && catalog
+                        .category_of(&model.id)
+                        .and_then(|id| catalog.category(id))
+                        .is_some_and(|found| found.name == category)
+            })
+            .or_else(|| catalog.models().find(|model| model.name == name))
+            .and_then(|model| crate::number_of(catalog, &model.id))
+            .unwrap_or(0)
+    };
+    let defaults = |model: u32| -> Vec<f32> {
+        catalog
+            .model_number(model)
+            .map(|model| {
+                catalog
+                    .ordered_params(model)
+                    .iter()
+                    .map(|p| p.default)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let block = |position: i64, kind: Kind, model: u32| session::Block {
+        position,
+        routing: matches!(kind, Kind::Input | Kind::Output).then_some(0),
+        kind,
+        model,
+        enabled: true,
+        values: defaults(model),
+        paired: None,
+        paired_values: Vec::new(),
+    };
+    let routing = |symbol: &str, param: &str| {
+        catalog
+            .model(symbol)
+            .and_then(|model| model.params.iter().find(|p| p.id == param))
+            .and_then(|param| catalog.choices(param))
+            .and_then(|choices| {
+                choices
+                    .iter()
+                    .position(|choice| choice.starts_with("Multi"))
+            })
+            .map(|index| index as i64)
+    };
+    let endpoint = |position: i64, kind: Kind, symbol: &str, param: &str| session::Block {
+        routing: routing(symbol, param).or(Some(0)),
+        ..block(position, kind, 0)
+    };
+    let input = app.chain.iter().find(|b| b.position == 0).cloned();
+    let output = app.chain.iter().find(|b| b.position == 9).cloned();
+    let mut chain =
+        vec![input
+            .unwrap_or_else(|| endpoint(0, Kind::Input, "HelixStomp_AppDSPFlowInput", "@input"))];
+    for (offset, (name, category)) in blocks.iter().enumerate() {
+        chain.push(block(
+            offset as i64 + 1,
+            Kind::Block,
+            number(name, category),
+        ));
+    }
+    chain.push(output.unwrap_or_else(|| {
+        endpoint(
+            9,
+            Kind::Output,
+            "HelixStomp_AppDSPFlowOutputMain",
+            "@output",
+        )
+    }));
+    let amp = blocks
+        .iter()
+        .position(|(_, category)| *category == "Amp")
+        .map_or(1, |at| at + 1);
+    app.chain = chain;
+    app.layout = Layout {
+        paths: vec![Path {
+            input: Some(0),
+            output: Some(9),
+            split: None,
+            join: None,
+            head: (1..=blocks.len()).collect(),
+            lanes: Vec::new(),
+            tail: Vec::new(),
+        }],
+    };
+    app.selected = amp;
+    app.assignments.clear();
+    app.switches.clear();
+    app.tempo = Some(tempo);
+    app.snapshots = snapshots.iter().map(|name| (*name).to_owned()).collect();
+    app.current_snapshot = 0;
+    app.snapshot_details.clear();
 }
 
 /// Dream Pop on the pedal while it is auditioned, as sheet 02 draws it: a

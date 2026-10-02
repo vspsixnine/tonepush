@@ -54,6 +54,10 @@ pub struct Config {
     /// every time it starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The account's public page on TonePush, once it has chosen a public
+    /// name; a server that does not say leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_url: Option<String>,
     /// Dark, light, or whichever the desktop is.
     #[serde(default)]
     pub appearance: crate::theme::Appearance,
@@ -84,9 +88,10 @@ pub struct PaneSize {
 
 impl Config {
     /// Remember the account this computer is signed in as.
-    pub fn sign_in(&mut self, token: String, account: String) {
+    pub fn sign_in(&mut self, token: String, account: String, profile_url: Option<String>) {
         self.token = Some(token);
         self.account = Some(account);
+        self.profile_url = profile_url;
         self.save();
     }
 
@@ -96,6 +101,7 @@ impl Config {
     pub fn sign_out(&mut self) {
         self.token = None;
         self.account = None;
+        self.profile_url = None;
         self.save();
     }
 }

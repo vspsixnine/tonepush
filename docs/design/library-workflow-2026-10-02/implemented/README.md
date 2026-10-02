@@ -184,3 +184,39 @@ Scenes: `hx-put-ask` (sheet 09), `hx-put-several` (sheet 12) and
   it there; a run of several leaves it out.
 - The design's several-slot question reads "starting where you dropped them";
   until drag and drop (stage 7) the run starts at the slot chosen, and says so.
+
+## Stage 6: TonePush's tones, setlist slots and versions play on a click
+
+TonePush's tones already played on a click; they now use the audition bar,
+the deck and the board as library tones do, with **Keep in library** (Ctrl D)
+beside **Keep in 01B**, which keeps the tone in the library too. A play is
+fetched with the audition mark (`?purpose=audition` and the
+`X-TonePush-Purpose: audition` header, which tonepush-web v0.33.0 reads), so
+TonePush counts it apart from downloads; keeping a tone first heard fetches it
+again as a download, so it is counted as one. The arrow keys step through the
+feed, and a fast run fetches and plays only the tone stopped on. The Cloud's
+table names who made each tone and how often it was downloaded (By and
+Downloads, in place of Character and Rating), and its details are where-rows
+like the library's: playing in 01B in place of Plexi Crunch, in the library or
+not, downloads and when it was updated, then its versions, a click on one
+playing it. A tone hosted by another catalog says so where the bar goes, with
+**Open**, rather than opening a browser on a click.
+
+A click on a setlist's slot plays the setlist's version ("Auditioning, from
+Album release show · its 05A"), and the bar's **Send to 05A** writes it back
+after asking, as the slot's menu does; the double-click that wrote a slot
+silently is gone. A click on one of a library tone's versions plays it. With
+no pedal, a click on an HX tone shows it where the editor would be, read only
+(sheet 06): "Preview", its marker, "Not playing: no pedal is connected", its
+chain and faces, and **Back to Plug in your pedal** (Esc).
+
+Scenes: `hx-cloud-audition` (sheet 04), `hx-setlist-audition` (sheet 23) and
+`no-device-glimpse` (sheet 06), at 1280 × 760.
+
+- The editor's TonePush client gains the signed-in API (your account, your
+  Tones, editing, hiding, deleting, setlists) and a probe of which endpoints a
+  server offers, with tests against mocked responses; stages 9 and 11 use it.
+  Signing in now also keeps the account's public page when the server sends
+  it.
+- A TonePush tone heard with no pedal is not shown: showing it would mean
+  fetching it, and TonePush would count that as a play nobody heard.

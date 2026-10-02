@@ -1193,6 +1193,9 @@ impl App {
             }
         };
         parts.push((note, false, true));
+        if self.hearing.glimpsing {
+            parts.push(("Read only until a pedal connects".to_owned(), false, true));
+        }
         parts
     }
 

@@ -486,6 +486,67 @@ fn where_job(parts: &[(&str, Words)], width: f32) -> egui::text::LayoutJob {
     job
 }
 
+/// One version in a list: its number and date, what it is at the right,
+/// and a click anywhere on it that plays it. The one playing says so, or
+/// that it is on its way. Answers whether it was clicked.
+fn version_row(
+    ui: &mut Ui,
+    number: &str,
+    date: &str,
+    playing: Option<bool>,
+    right: impl FnOnce(&mut Ui),
+) -> bool {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
+    if playing.is_some() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(6), theme::accent_soft());
+    } else if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(6), theme::raised());
+    }
+    let y = rect.center().y;
+    let number = shell::galley(ui, number, theme::semibold(theme::SECONDARY), theme::text());
+    let number_width = number.size().x;
+    shell::paint_line(ui, number, rect.left() + 6.0, y);
+    let date = shell::galley(ui, date, theme::regular(theme::SECONDARY), theme::muted());
+    shell::paint_line(ui, date, rect.left() + 6.0 + number_width + 8.0, y);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(6.0, 0.0)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    child.spacing_mut().item_spacing.x = 8.0;
+    match playing {
+        Some(true) => {
+            theme::Chip::new("Loading")
+                .spinner()
+                .mood(Mood::Accent)
+                .outline(theme::accent_line())
+                .show(&mut child);
+        }
+        Some(false) => {
+            theme::Chip::new("Playing")
+                .icon(Icon::Volume)
+                .mood(Mood::Accent)
+                .outline(theme::accent_line())
+                .show(&mut child);
+        }
+        None => {
+            right(&mut child);
+            if response.hovered() {
+                theme::label(
+                    &mut child,
+                    "click to hear it",
+                    theme::regular(12.0),
+                    theme::muted(),
+                );
+            }
+        }
+    }
+    response.clicked()
+}
+
 /// One line of where a tone is (the design's inspector): an icon in its own
 /// column, the words, and the next action there as a small button at the
 /// right. Returns whether the action was pressed.
@@ -1417,24 +1478,18 @@ impl App {
             ui.add_space(10.0);
             section(ui, "Versions");
             let mut restore = None;
+            let mut play = None;
+            let loading = self.heard_loading();
             for version in history.iter().rev() {
-                ui.horizontal(|ui| {
-                    ui.set_min_height(26.0);
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    theme::label(
-                        ui,
-                        &format!("v{}", version.version),
-                        theme::semibold(theme::SECONDARY),
-                        theme::text(),
-                    );
-                    theme::label(
-                        ui,
-                        &crate::day_month(&version.meta.modified_at),
-                        theme::regular(theme::SECONDARY),
-                        theme::muted(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if version.hash == hash {
+                let playing = self.hears(&crate::audition::Source::Library(version.hash.clone()));
+                let current = version.hash == hash;
+                let clicked = version_row(
+                    ui,
+                    &format!("v{}", version.version),
+                    &crate::day_month(&version.meta.modified_at),
+                    playing.then_some(loading),
+                    |ui| {
+                        if current {
                             theme::Chip::new("Current").mood(Mood::Ok).show(ui);
                         } else if theme::Button::new("Make current")
                             .ghost()
@@ -1444,8 +1499,18 @@ impl App {
                         {
                             restore = Some(version.hash.clone());
                         }
-                    });
-                });
+                    },
+                );
+                if clicked {
+                    play = Some((version.hash.clone(), version.version, current));
+                }
+            }
+            if let Some((version, number, current)) = play {
+                if current {
+                    self.audition_library(i);
+                } else {
+                    self.audition_version(i, version, number);
+                }
             }
             if let Some(version) = restore {
                 match library::make_current(&version) {
@@ -1620,88 +1685,93 @@ impl App {
             }
             theme::label_truncated(ui, &words.join(" · "), theme::regular(12.0), theme::muted());
         });
-        if !row.chain.is_empty() {
+        if !row.chain.is_empty() && theme::Tier::now(ui.ctx()) == Tier::L {
             ui.add_space(8.0);
             chain_wells(ui, &row.chain);
         }
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+        rule(ui);
 
-        section(ui, "On the pedal");
-        let auditioning = self.auditioning == Some(summary.id);
-        let blocker = self.cloud_audition_blocker(&entry);
+        // Where it is: the pedal, this computer, TonePush.
         let mut action = None;
-        if auditioning {
-            theme::label(
+        let heard = self.hears(&crate::audition::Source::TonePush(summary.id));
+        let set_aside = self.hearing.set_aside.clone().unwrap_or_default();
+        if heard && self.heard_loading() {
+            where_row(
                 ui,
-                "Playing on the pedal now, in place of the preset you were on.",
-                theme::regular(theme::SECONDARY),
-                theme::muted(),
+                Icon::LoaderCircle,
+                theme::accent(),
+                &[
+                    ("On its way to ", Words::Soft),
+                    (set_aside.slot.as_str(), Words::Bold),
+                ],
+                None,
             );
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                if theme::Button::new("Keep on the pedal")
-                    .small()
-                    .primary()
-                    .show(ui)
-                    .on_hover_text("Leave it in the edit buffer; Save writes it")
-                    .clicked()
-                {
-                    action = Some(0);
-                }
-                if theme::Button::new("Done auditioning")
-                    .ghost()
-                    .small()
-                    .show(ui)
-                    .clicked()
-                {
-                    action = Some(1);
-                }
-            });
-        } else {
-            match blocker {
-                Some(why) => {
-                    theme::label(ui, &why, theme::regular(theme::SECONDARY), theme::muted());
-                }
-                None => {
-                    if theme::Button::new("Audition on the pedal")
-                        .small()
-                        .icon(Icon::Volume)
-                        .show(ui)
-                        .on_hover_text("Play it on the pedal; what you were on comes back after")
-                        .clicked()
-                    {
-                        action = Some(2);
-                    }
-                }
+        } else if heard {
+            let playing = format!("Playing in {}", set_aside.slot);
+            let place = format!(", in place of {}", set_aside.name);
+            let mut words = vec![(playing.as_str(), Words::Accent)];
+            if !set_aside.name.is_empty() {
+                words.push((place.as_str(), Words::Soft));
             }
+            where_row(ui, Icon::Volume, theme::accent(), &words, None);
+        } else if let Some(why) = self.cloud_audition_blocker(&entry) {
+            where_row_hover(ui, Icon::Ban, theme::muted(), &[(&why, Words::Soft)], &why);
+        } else if where_row(
+            ui,
+            Icon::Pedal,
+            theme::muted(),
+            &[("Not playing", Words::Soft)],
+            Some("Play"),
+        ) {
+            action = Some(2);
         }
-        ui.add_space(10.0);
-        section(ui, "In your library");
         let wanted = entry.tone.file_sha256.clone();
         let local = self.local_cloud_entry(wanted.as_deref());
-        match local {
-            Some(_) => {
-                if theme::Button::new("Show it in your tones")
-                    .ghost()
-                    .small()
-                    .icon(Icon::Computer)
-                    .show(ui)
-                    .clicked()
-                {
+        match local.and_then(|row| self.lib_entries.get(row).map(|entry| entry.version)) {
+            Some(version) => {
+                let version = format!("v{version}");
+                if where_row(
+                    ui,
+                    Icon::Computer,
+                    theme::text_soft(),
+                    &[("In your library · ", Words::Soft), (&version, Words::Bold)],
+                    Some("Show"),
+                ) {
                     action = Some(3);
                 }
             }
             None => {
-                if theme::Button::new("Keep in library")
-                    .small()
-                    .icon(Icon::Computer)
-                    .show(ui)
-                    .on_hover_text("Download this Tone into your library")
-                    .clicked()
-                {
+                if where_row(
+                    ui,
+                    Icon::Computer,
+                    theme::muted(),
+                    &[("Not in your library", Words::Soft)],
+                    Some("Keep"),
+                ) {
                     action = Some(4);
                 }
+            }
+        }
+        let downloads = summary.downloads_count.unwrap_or(summary.installs_count);
+        let mut counted = format!("{} downloads", crate::format_count(downloads));
+        if downloads == 1 {
+            counted = "1 download".to_owned();
+        }
+        let updated = crate::day_month(&summary.updated_at);
+        if !updated.is_empty() {
+            counted = format!("{counted} · updated {updated}");
+        }
+        if where_row(
+            ui,
+            Icon::Cloud,
+            theme::text_soft(),
+            &[(&counted, Words::Soft)],
+            wanted.as_ref().map(|_| "Open"),
+        ) {
+            if let Some(hash) = &wanted {
+                ui.ctx()
+                    .open_url(egui::OpenUrl::new_tab(crate::cloud::tone_url(hash)));
             }
         }
         ui.add_space(10.0);
@@ -1768,54 +1838,52 @@ impl App {
             ui.add_space(10.0);
             section(ui, "Versions");
             let mut chosen_version = None;
+            let loading = self.heard_loading();
             for historical in entry.tone.versions.iter().rev() {
-                ui.horizontal(|ui| {
-                    ui.set_min_height(26.0);
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    theme::label(
-                        ui,
-                        &format!("v{}", historical.number),
-                        theme::semibold(theme::SECONDARY),
-                        theme::text(),
-                    );
-                    theme::label(
-                        ui,
-                        &crate::day_month(&historical.created_at),
-                        theme::regular(theme::SECONDARY),
-                        theme::muted(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if historical.current {
-                            theme::Chip::new("Current").mood(Mood::Ok).show(ui);
-                        } else {
-                            if theme::Button::new("Keep")
+                let key = if historical.current {
+                    summary.id
+                } else {
+                    Self::cloud_version_entry(&entry, historical)
+                        .tone
+                        .summary
+                        .id
+                };
+                let playing = self.hears(&crate::audition::Source::TonePush(key));
+                let clicked = version_row(
+                    ui,
+                    &format!("v{}", historical.number),
+                    &crate::day_month(&historical.created_at),
+                    playing.then_some(loading),
+                    |ui| {
+                        if !historical.current
+                            && theme::Button::new("Keep")
                                 .ghost()
                                 .small()
                                 .show(ui)
+                                .on_hover_text("Keep this version in your library")
                                 .clicked()
-                            {
-                                chosen_version = Some((historical.clone(), CloudAction::Computer));
-                            }
-                            if theme::Button::new("Audition")
-                                .ghost()
-                                .small()
-                                .show(ui)
-                                .clicked()
-                            {
-                                chosen_version = Some((historical.clone(), CloudAction::Audition));
-                            }
+                        {
+                            chosen_version = Some((historical.clone(), CloudAction::Computer));
                         }
-                    });
-                });
+                        if historical.current && !playing {
+                            theme::Chip::new("Current").mood(Mood::Ok).show(ui);
+                        }
+                    },
+                );
+                if clicked && !playing {
+                    chosen_version = Some((historical.clone(), CloudAction::Audition));
+                }
             }
             if let Some((version, kind)) = chosen_version {
-                let historical = Self::cloud_version_entry(&entry, &version);
-                self.start_cloud_entry_action(historical, kind, ui.ctx());
+                if version.current {
+                    self.start_cloud_action(index, kind, ui.ctx());
+                } else {
+                    let historical = Self::cloud_version_entry(&entry, &version);
+                    self.start_cloud_entry_action(historical, kind, ui.ctx());
+                }
             }
         }
         match action {
-            Some(0) => self.keep_audition(),
-            Some(1) => self.end_audition(),
             Some(2) => self.start_cloud_action(index, CloudAction::Audition, ui.ctx()),
             Some(3) => {
                 if let Some(row) = local {
@@ -2400,6 +2468,12 @@ impl App {
     fn setlist_banner(&mut self, ui: &mut Ui, states: &[SlotState], shown: usize) {
         let counts = Differences::of(states);
         let (title, body) = difference_words(counts);
+        // Where slots differ, what a click on one does.
+        let body = if counts.differing() > 0 {
+            format!("{body} A click plays the setlist's version; the pedal's stays where it is.")
+        } else {
+            body
+        };
         let total = shown;
         let differing = counts.differing();
         let mood = if differing == 0 { Mood::Ok } else { Mood::Hot };
@@ -2513,6 +2587,7 @@ impl App {
             ((width - label_width - gap * (per_bank as f32 - 1.0)) / per_bank as f32).floor();
         let only = self.setlist_only_differing;
         let mut send = None;
+        let mut play = None;
         let pedal = self.pedal_slots();
         for bank in 0..banks {
             let slots: Vec<usize> = (bank * per_bank..((bank + 1) * per_bank).min(total)).collect();
@@ -2552,7 +2627,17 @@ impl App {
                     },
                 );
                 let hot = state.is_some_and(SlotState::differs);
-                let fill = if hot {
+                // The slot playing on the pedal: amber, with a speaker.
+                let heard = entry.is_some_and(|entry| {
+                    self.hears(&crate::audition::Source::Setlist {
+                        hash: entry.hash.clone(),
+                        setlist: setlist.name.clone(),
+                        slot: *slot as i64,
+                    })
+                });
+                let fill = if heard {
+                    theme::accent_soft()
+                } else if hot {
                     theme::mix(theme::panel(), theme::hot(), 0.07)
                 } else if response.hovered() && entry.is_some() {
                     theme::raised()
@@ -2575,7 +2660,9 @@ impl App {
                         fill,
                         Stroke::new(
                             1.0,
-                            if hot {
+                            if heard {
+                                theme::accent_line()
+                            } else if hot {
                                 theme::alpha(theme::hot(), 0.75)
                             } else {
                                 theme::line()
@@ -2593,7 +2680,16 @@ impl App {
                 );
                 shell::paint_line(ui, letter, rect.left() + 10.0, rect.center().y);
                 let mut right = rect.right() - 8.0;
-                if hot {
+                if heard {
+                    theme::paint_icon(
+                        ui,
+                        Icon::Volume,
+                        Pos2::new(right - 6.0, rect.center().y),
+                        12.0,
+                        theme::accent(),
+                    );
+                    right -= 18.0;
+                } else if hot {
                     theme::paint_icon(
                         ui,
                         Icon::GitCompare,
@@ -2644,10 +2740,10 @@ impl App {
                         _ => label.clone(),
                     };
                     let response = response.on_hover_text(format!(
-                        "{hover}. Double-click to send just this preset to it"
+                        "{hover}. A click plays the setlist's version; its menu sends it to {label}"
                     ));
-                    if response.double_clicked() && live {
-                        send = Some((*slot, entry.clone()));
+                    if response.clicked() {
+                        play = Some((*slot, entry.clone()));
                     }
                     response.context_menu(|ui| {
                         theme::menu_width(ui, 240.0);
@@ -2677,11 +2773,15 @@ impl App {
             ui.add_space(gap - ui.spacing().item_spacing.y);
         }
         let _ = tier;
+        if let Some((slot, entry)) = play {
+            self.hearing.arrows = crate::audition::Arrows::Presets;
+            self.audition_setlist_slot(&setlist.name, slot as i64, &entry);
+        }
         if let Some((slot, entry)) = send {
             if !library::holds(&entry.hash) {
                 self.note(format!("{} is missing from the library", entry.name));
             } else {
-                self.send_one_slot(slot as i64, &entry);
+                self.put_to(slot as i64, vec![(entry.hash.clone(), entry.name.clone())]);
             }
         }
     }

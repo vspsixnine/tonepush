@@ -41,7 +41,7 @@ pub use session::{spawn, spawn_repainting, ApplyBlock, Cmd, Evt};
 /// A tone file opened for a look before anything touches the pedal. It is
 /// drawn by the same renderer as the loaded chain - one renderer, and the
 /// preview simply runs it in display mode - and it carries what Load needs.
-struct Preview {
+pub(crate) struct Preview {
     name: String,
     /// "Full rig, for FRFR or a PA" - what the tone is, in one line.
     line: String,
@@ -448,6 +448,12 @@ pub struct App {
     cloud_tags: Vec<String>,
     cloud_sort: (LibColumn, bool),
     cloud_download: Option<CloudDownloadJob>,
+    /// A play asked for while another Tone's file was on its way.
+    cloud_waiting: Option<(cloud::DiscoveredTone, CloudAction)>,
+    /// TonePush's rows as the table last drew them: what the arrows step.
+    cloud_rows: Vec<usize>,
+    /// Bring the chosen TonePush row into view, no further than needed.
+    cloud_reveal_near: bool,
     cloud_artifacts: std::collections::HashMap<i64, Vec<u8>>,
     /// The cloud Tone temporarily sounding through the pedal.
     auditioning: Option<i64>,
@@ -676,12 +682,14 @@ enum LibColumn {
     Artist,
     Song,
     Genre,
+    /// Who published a TonePush tone.
+    By,
     Downloads,
     Modified,
 }
 
 impl LibColumn {
-    const ALL: [LibColumn; 14] = [
+    const ALL: [LibColumn; 15] = [
         LibColumn::Sync,
         LibColumn::Pedal,
         LibColumn::Name,
@@ -689,6 +697,7 @@ impl LibColumn {
         LibColumn::SongArtist,
         LibColumn::Character,
         LibColumn::Rating,
+        LibColumn::By,
         LibColumn::Downloads,
         LibColumn::Added,
         LibColumn::Version,
@@ -712,6 +721,7 @@ impl LibColumn {
             LibColumn::Artist => "Artist",
             LibColumn::Song => "Song",
             LibColumn::Genre => "Genre",
+            LibColumn::By => "By",
             LibColumn::Downloads => "Downloads",
             LibColumn::Modified => "Modified",
         }
@@ -753,6 +763,7 @@ impl LibColumn {
             LibColumn::Artist => ("Artist", 130.0, true, false),
             LibColumn::Song => ("Song", 150.0, true, false),
             LibColumn::Genre => ("Genre", 130.0, true, false),
+            LibColumn::By => ("By", 120.0, false, false),
             LibColumn::Downloads => ("Downloads", 80.0, false, false),
             LibColumn::Modified => ("Modified", 64.0, false, false),
         };
@@ -770,7 +781,7 @@ impl LibColumn {
     /// from, and what a text cell shows.
     fn text(self, entry: &LibEntry) -> String {
         match self {
-            LibColumn::Sync | LibColumn::Pedal | LibColumn::Chain => String::new(),
+            LibColumn::Sync | LibColumn::Pedal | LibColumn::Chain | LibColumn::By => String::new(),
             LibColumn::Name => entry.name.clone(),
             LibColumn::Version => {
                 if entry.versions > 1 {
@@ -966,6 +977,32 @@ fn day_month(timestamp: &str) -> String {
     } else {
         format!("{day} {name} {year}")
     }
+}
+
+/// Where a Tone hosted elsewhere lives, as the strip names it.
+fn host_of(url: &str) -> String {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches("www.");
+    if host.contains("line6") {
+        "Line 6 CustomTone".to_owned()
+    } else {
+        host.to_owned()
+    }
+}
+
+/// Fetch a Tone again as the download it now is, so TonePush counts it,
+/// when the file was first fetched only to be heard. The answer is not
+/// needed: the bytes are already here.
+fn count_download(tone: cloud::ToneDetails) {
+    std::thread::spawn(move || {
+        let _ = cloud::download_for(&tone, cloud::Purpose::Download);
+    });
 }
 
 fn format_count(count: u64) -> String {
@@ -1371,6 +1408,9 @@ impl App {
             cloud_tags: Vec::new(),
             cloud_sort: (LibColumn::Downloads, false),
             cloud_download: None,
+            cloud_waiting: None,
+            cloud_rows: Vec::new(),
+            cloud_reveal_near: false,
             cloud_artifacts: Default::default(),
             auditioning: None,
             put_aside_dirty: false,
@@ -1503,6 +1543,7 @@ impl App {
             match self.from_device.try_recv() {
                 Ok(Evt::Connected { device, presets }) => {
                     self.connection = Connection::Online;
+                    self.close_glimpse();
                     self.device = device;
                     self.preset_count = presets;
                     // Replace the startup's device-agnostic prefetch even when
@@ -2023,6 +2064,9 @@ impl App {
         // the block pane, which gives it the height it takes.
         self.sidebar(ui, tier);
         match self.page {
+            shell::Page::Edit if self.shows_connect() && self.hearing.glimpse.is_some() => {
+                self.glimpse_page(ui, tier);
+            }
             shell::Page::Edit if self.shows_connect() => {
                 self.library_pane(ui, tier);
                 self.connect_page(ui, tier);
@@ -3698,6 +3742,22 @@ impl App {
             .cloud_download
             .take()
             .expect("the job was just present");
+        // A play asked for while this came is fetched next.
+        if let Some((entry, action)) = self.cloud_waiting.take() {
+            if entry.tone.summary.id != job.entry.tone.summary.id {
+                if let Some(bytes) = self.cloud_artifacts.get(&entry.tone.summary.id).cloned() {
+                    self.apply_cloud_artifact(&entry, action, bytes);
+                } else {
+                    self.fetch_cloud(entry, action, ctx);
+                }
+                // What came is kept for later, but not played over it.
+                if let Ok(cloud::ToneDelivery::Artifact(bytes)) = answer {
+                    self.cloud_artifacts
+                        .insert(job.entry.tone.summary.id, bytes);
+                }
+                return;
+            }
+        }
         match answer {
             Ok(cloud::ToneDelivery::Artifact(bytes)) => {
                 self.cloud_artifacts
@@ -3775,27 +3835,40 @@ impl App {
         ctx: &egui::Context,
     ) {
         let id = entry.tone.summary.id;
-        if matches!(action, CloudAction::Audition) && self.hears(&audition::Source::TonePush(id)) {
+        let playing = matches!(action, CloudAction::Audition);
+        if playing && self.hears(&audition::Source::TonePush(id)) {
             // A click on the tone playing leaves it playing.
             return;
         }
-        if matches!(action, CloudAction::Audition) {
-            self.hearing.strip = None;
-            if let Some(why) = self.cloud_audition_blocker(&entry) {
-                self.hearing.strip = Some(audition::Strip {
-                    icon: theme::Icon::Info,
-                    words: vec![(why, false)],
-                    narrow: None,
-                });
-                return;
-            }
-        }
-        if let Some(url) = entry
+        let external = entry
             .tone
             .download
             .as_ref()
-            .and_then(|download| download.external.clone())
-        {
+            .and_then(|download| download.external.clone());
+        if playing {
+            self.hearing.strip = None;
+            if let Some(url) = external {
+                // Hosted by its own catalog: said where the bar goes, with
+                // the way to it.
+                self.hearing.strip = Some(audition::Strip {
+                    icon: theme::Icon::ExternalLink,
+                    words: vec![(
+                        format!(
+                            "Hosted by {}: TonePush cannot play it from here.",
+                            host_of(&url)
+                        ),
+                        false,
+                    )],
+                    narrow: None,
+                    open: Some(url),
+                });
+                return;
+            }
+            if let Some(strip) = self.cloud_cannot_play(&entry) {
+                self.hearing.strip = Some(strip);
+                return;
+            }
+        } else if let Some(url) = external {
             ctx.open_url(egui::OpenUrl::new_tab(url));
             self.note(format!(
                 "{} is hosted by its original catalog; opened it there",
@@ -3804,21 +3877,53 @@ impl App {
             return;
         }
         if let Some(bytes) = self.cloud_artifacts.get(&id).cloned() {
+            if !playing {
+                // Fetched to be heard, now kept: TonePush counts that as the
+                // download it is.
+                count_download(entry.tone.clone());
+            }
             self.apply_cloud_artifact(&entry, action, bytes);
             return;
         }
-        if let Some(job) = &self.cloud_download {
-            self.note(format!(
-                "{} is still downloading",
-                job.entry.tone.summary.name
-            ));
+        if self.cloud_download.is_some() {
+            if playing {
+                // Stepping through the feed: the last one asked for plays
+                // once the file on its way has come.
+                self.begin_hearing(
+                    id,
+                    audition::Source::TonePush(id),
+                    entry.tone.summary.name.clone(),
+                );
+                self.cloud_waiting = Some((entry, action));
+            } else if let Some(job) = &self.cloud_download {
+                self.note(format!(
+                    "{} is still downloading",
+                    job.entry.tone.summary.name
+                ));
+            }
             return;
         }
+        self.fetch_cloud(entry, action, ctx);
+    }
+
+    /// Fetch a Tone's file, saying why: a play is counted as an audition,
+    /// apart from downloads.
+    fn fetch_cloud(
+        &mut self,
+        entry: cloud::DiscoveredTone,
+        action: CloudAction,
+        ctx: &egui::Context,
+    ) {
+        let id = entry.tone.summary.id;
+        let purpose = match action {
+            CloudAction::Audition => cloud::Purpose::Audition,
+            CloudAction::Computer => cloud::Purpose::Download,
+        };
         let tone = entry.tone.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         let repaint = ctx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(cloud::download(&tone));
+            let _ = tx.send(cloud::download_for(&tone, purpose));
             repaint.request_repaint();
         });
         if matches!(action, CloudAction::Audition) {
@@ -3834,6 +3939,36 @@ impl App {
             action,
             answer: rx,
         });
+    }
+
+    /// Why a click on a TonePush tone cannot play it, in the strip's words.
+    fn cloud_cannot_play(&self, entry: &cloud::DiscoveredTone) -> Option<audition::Strip> {
+        let name = &entry.tone.summary.name;
+        if !self.pedal_online() {
+            return Some(audition::Strip {
+                icon: theme::Icon::Usb,
+                words: vec![
+                    ("No pedal is connected, so ".to_owned(), false),
+                    (name.clone(), true),
+                    (
+                        " is not played. Plug in a pedal and the next click plays.".to_owned(),
+                        false,
+                    ),
+                ],
+                narrow: None,
+                open: None,
+            });
+        }
+        let why = self.cloud_audition_blocker(entry)?;
+        let narrow = (self.library_device_filter.is_none()
+            && !self.library_connected_device.is_empty())
+        .then(|| self.library_connected_device.clone());
+        Some(audition::Strip {
+            icon: theme::Icon::Info,
+            words: vec![(why, false)],
+            narrow,
+            open: None,
+        })
     }
 
     /// Present one historical Cloud artifact through the same keep/audition
@@ -4226,6 +4361,9 @@ impl App {
                                 !downloading.is_some_and(|job| job.action == CloudAction::Computer),
                             ),
                         ]),
+                        LibColumn::By => table::Cell::Text(
+                            entry.tone.summary.creator.clone().unwrap_or_default(),
+                        ),
                         _ => column.value_cell(local, &fit, false),
                     })
                     .collect(),
@@ -4247,6 +4385,11 @@ impl App {
             .map(|row| (row, loading));
         let order = grid.sort_rows();
         let rows: Vec<usize> = order.iter().map(|&row| source_rows[row]).collect();
+        self.cloud_rows.clone_from(&rows);
+        if std::mem::take(&mut self.cloud_reveal_near) {
+            grid.reveal = grid.selected;
+            grid.reveal_near = true;
+        }
 
         let did = table::show(ui, "cloud-library", &mut grid);
         self.apply_column_visibility(did.column_visibility);
@@ -4270,7 +4413,7 @@ impl App {
         if let Some((row, ..)) = did.clicked {
             if let Some(&entry) = rows.get(row) {
                 self.cloud_selected = Some(entry);
-                self.hearing.arrows = audition::Arrows::Presets;
+                self.hearing.arrows = audition::Arrows::Cloud;
                 self.start_cloud_action(entry, CloudAction::Audition, ui.ctx());
             }
         }
@@ -4298,31 +4441,6 @@ impl App {
                 }
                 _ => self.start_cloud_action(entry, CloudAction::Computer, ui.ctx()),
             }
-        }
-    }
-
-    /// Put one preset out of a setlist back into its slot.
-    fn send_one_slot(&mut self, slot: i64, entry: &library::Slot) {
-        if !self.tone_kind_compatible(&entry.hash) {
-            return self.note(format!("{} is for a different pedal family", entry.name));
-        }
-        match library::read(&entry.hash) {
-            Some(bytes) => {
-                self.note(format!(
-                    "writing {} to {}",
-                    entry.name,
-                    self.active_slot_label(slot)
-                ));
-                if self.pro_active() {
-                    self.pro.send_tone(slot as usize, entry.name.clone(), bytes);
-                } else {
-                    self.send(Cmd::PushSetlist(vec![(
-                        slot,
-                        Some((entry.name.clone(), bytes)),
-                    )]));
-                }
-            }
-            None => self.note(format!("{} is missing from the library", entry.name)),
         }
     }
 
@@ -4597,9 +4715,7 @@ impl App {
             };
             let fit = self.fit(&self.lib_entries[i], tier == theme::Tier::S);
             let can_send = can_send && fit.plays;
-            let heard = self
-                .hears(&audition::Source::Library(hash.clone()))
-                .then(|| self.heard_loading());
+            let heard = (self.heard_hash() == Some(hash.as_str())).then(|| self.heard_loading());
             let entry = &self.lib_entries[i];
             grid.rows.push(
                 shown
@@ -4645,13 +4761,10 @@ impl App {
             .and_then(|selected| rows.iter().position(|&row| row == selected));
         // The tone playing on the pedal, or on its way there.
         let loading = self.heard_loading();
+        let heard = self.heard_hash().map(str::to_owned);
         grid.playing = rows
             .iter()
-            .position(|&row| {
-                self.hears(&audition::Source::Library(
-                    self.lib_entries[row].hash.clone(),
-                ))
-            })
+            .position(|&row| heard.as_deref() == Some(self.lib_entries[row].hash.as_str()))
             .map(|row| (row, loading));
 
         if let Some((hash, column, draft)) = self.lib_editing.clone() {
@@ -4814,6 +4927,7 @@ impl App {
             | LibColumn::SongArtist
             | LibColumn::Added
             | LibColumn::Modified
+            | LibColumn::By
             | LibColumn::Downloads => return,
         }
         let meta = match library::save_meta(hash, &meta) {
@@ -4837,10 +4951,15 @@ impl App {
     /// off. The dot and the name are not offered: a table of tones with no
     /// names is not a table of anything.
     fn shown_columns(&self) -> Vec<LibColumn> {
+        let cloud = self.lib_showing == LibraryView::Cloud;
         LibColumn::ALL
             .into_iter()
-            .filter(|column| {
-                self.lib_showing == LibraryView::Cloud || *column != LibColumn::Downloads
+            .filter(|column| match column {
+                // TonePush's: who made each and how often it was downloaded,
+                // in place of the character and rating a library keeps.
+                LibColumn::By | LibColumn::Downloads => cloud,
+                LibColumn::Character | LibColumn::Rating => !cloud,
+                _ => true,
             })
             .filter(|c| c.always() || !self.lib_hidden.contains(c))
             .collect()
@@ -5145,8 +5264,13 @@ impl App {
             return;
         };
         match signing.answer.try_recv() {
-            Ok(cloud::Linked::In { token, account }) => {
-                self.config.sign_in(token, account.clone());
+            Ok(cloud::Linked::In {
+                token,
+                account,
+                profile_url,
+                ..
+            }) => {
+                self.config.sign_in(token, account.clone(), profile_url);
                 self.signing_in = None;
                 self.note(format!("signed in as {account}"));
             }
@@ -5166,8 +5290,13 @@ impl App {
             .into_iter()
             .enumerate()
             .filter(|(_, column)| {
+                let cloud = self.lib_showing == LibraryView::Cloud;
                 !column.always()
-                    && (self.lib_showing == LibraryView::Cloud || *column != LibColumn::Downloads)
+                    && match column {
+                        LibColumn::By | LibColumn::Downloads => cloud,
+                        LibColumn::Character | LibColumn::Rating => !cloud,
+                        _ => true,
+                    }
             })
             .map(|(key, column)| {
                 (

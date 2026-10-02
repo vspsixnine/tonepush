@@ -221,6 +221,16 @@ impl App {
         let Some(sending) = self.sending.take() else {
             return;
         };
+        self.put_to(slot, sending.tones);
+    }
+
+    /// Put tones in a run of slots from `slot`: at once into empty ones,
+    /// after the question when anything would be replaced.
+    pub(crate) fn put_to(&mut self, slot: i64, tones: Vec<(String, String)>) {
+        if let Some(why) = self.put_refusal() {
+            return self.problem(format!("Nothing can be put in a slot: {why}"));
+        }
+        let sending = Sending { tones };
         let writes = self.plan_put(slot, &sending.tones);
         if writes.len() < sending.tones.len() {
             self.note(format!(

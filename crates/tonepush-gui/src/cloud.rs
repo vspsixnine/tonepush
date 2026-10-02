@@ -6,9 +6,14 @@
 //! details and individual Tone downloads for the browser/install UI. Publishing
 //! mirrors the two resources on the server: create a Song, then add its first
 //! Tone. If the second request fails the error says that the Song was created;
-//! there is no delete call and therefore no pretend rollback.
+//! there is no call that deletes a Song and therefore no pretend rollback.
+//!
+//! The signed-in calls (your account, editing and deleting what you published,
+//! setlists) are newer than the catalog. An older deployment lacks them, so
+//! they answer [`ApiError::Unavailable`] there rather than a misleading error,
+//! and [`probe`] asks once which of them a deployment offers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::OnceLock;
@@ -128,6 +133,18 @@ pub struct ToneSummary {
     pub minimum_firmware_version: Option<String>,
     pub parser_version: Option<String>,
     pub installs_count: u64,
+    /// Plays from the editor, which TonePush counts apart from downloads.
+    /// An older deployment does not count them and leaves this out.
+    #[serde(default)]
+    pub auditions_count: u64,
+    /// The same number as `installs_count`, under the name the website
+    /// shows. An older deployment leaves it out.
+    #[serde(default)]
+    pub downloads_count: Option<u64>,
+    /// Who can see the Tone: "everyone" or "only_you". An older deployment
+    /// only ever shows published Tones and leaves it out.
+    #[serde(default)]
+    pub visibility: Option<String>,
     pub saves_count: u64,
     pub remix_count: u64,
     /// Stable public identity supplied by the originating Editor library.
@@ -193,6 +210,77 @@ pub struct ToneVersion {
     #[serde(default)]
     pub created_at: String,
     pub download: ToneDownload,
+}
+
+/// The signed-in account, from `GET /api/v1/me`. The slug and the profile
+/// address are missing until the account has chosen a public name.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Me {
+    pub id: i64,
+    pub name: Option<String>,
+    pub slug: Option<String>,
+    pub profile_url: Option<String>,
+}
+
+/// The device a setlist is for. Setlists describe it more briefly than Tones.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetlistDevice {
+    pub id: i64,
+    pub name: String,
+    pub slug: String,
+    pub family: Option<String>,
+}
+
+/// One row of `GET /api/v1/setlists`: a running order for one device, for a
+/// show or a rehearsal.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetlistSummary {
+    pub id: i64,
+    pub name: String,
+    pub venue: Option<String>,
+    /// The day of the show, as YYYY-MM-DD.
+    pub performed_on: Option<String>,
+    /// "everyone" or "only_you".
+    pub visibility: String,
+    pub state: String,
+    pub device: SetlistDevice,
+    pub slot_count: u32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// One setlist with its running order, from `GET /api/v1/setlists/:id` and
+/// the answers to creating or changing one.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SetlistDetails {
+    #[serde(flatten)]
+    pub summary: SetlistSummary,
+    #[serde(default)]
+    pub slots: Vec<SetlistSlot>,
+}
+
+/// One place in a setlist's running order. A Tone hidden after it was added
+/// keeps its place, so the order survives, but arrives without its details
+/// or download and with `available` false.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SetlistSlot {
+    /// Zero-based place in the running order.
+    pub position: u32,
+    pub tone_id: i64,
+    /// The version to play, or `None` for whichever is current.
+    pub version: Option<u32>,
+    #[serde(default = "slot_available")]
+    pub available: bool,
+    /// The Tone's summary and its Song. It names no file hash, so checking a
+    /// download needs the Tone itself from [`CloudClient::tone_as`].
+    pub tone: Option<ToneDetails>,
+    pub download: Option<ToneDownload>,
+}
+
+/// Only a hidden Tone's slot says it cannot be played, so a slot that does
+/// not say is playable.
+fn slot_available() -> bool {
+    true
 }
 
 /// One installable row in the desktop browser. The web API groups Tones under
@@ -277,6 +365,11 @@ struct TonesResponse {
 #[derive(Debug, Deserialize)]
 struct PublishedFilesResponse {
     file_sha256s: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetlistsResponse {
+    setlists: Vec<SetlistSummary>,
 }
 
 /// A client rooted at one TonePush web deployment.
@@ -683,6 +776,17 @@ impl CloudClient {
     /// is a native artifact. Callers open [`ToneDelivery::External`] in the
     /// browser and install [`ToneDelivery::Artifact`] into the local library.
     pub fn download(&self, tone: &ToneDetails) -> Result<ToneDelivery, String> {
+        self.download_for(tone, Purpose::Download)
+    }
+
+    /// Resolve a Tone's download as [`Self::download`] does, saying why it is
+    /// fetched. An audition carries its mark both as a query and as a header,
+    /// so TonePush counts the play apart from downloads either way.
+    pub fn download_for(
+        &self,
+        tone: &ToneDetails,
+        purpose: Purpose,
+    ) -> Result<ToneDelivery, String> {
         let Some(location) = &tone.download else {
             return Err(format!("{} has no downloadable preset", tone.summary.name));
         };
@@ -716,9 +820,14 @@ impl CloudClient {
         } else {
             format!("{}/{}", self.base, path.trim_start_matches('/'))
         };
-        let mut response = self
-            .http
-            .get(url)
+        let request = match purpose {
+            Purpose::Download => self.http.get(url),
+            Purpose::Audition => self
+                .http
+                .get(with_query(&url, AUDITION_PURPOSE))
+                .header(PURPOSE_HEADER, "audition"),
+        };
+        let mut response = request
             .header("User-Agent", agent_name())
             .call()
             .map_err(|error| format!("the Tone artifact did not answer: {error}"))?;
@@ -856,6 +965,29 @@ pub enum ToneDelivery {
     External(String),
 }
 
+/// Why a Tone's preset is fetched. The editor plays a cloud Tone on every
+/// click, and those plays must not inflate the downloads a player sees on
+/// TonePush, so a play says it is an audition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// Kept: installed into the library or written to the pedal.
+    Download,
+    /// Only played, and counted apart from downloads.
+    Audition,
+}
+
+/// The query that marks an artifact fetch as an audition. The same mark
+/// travels in the `X-TonePush-Purpose` header, and TonePush reads either.
+pub const AUDITION_PURPOSE: &str = "purpose=audition";
+
+const PURPOSE_HEADER: &str = "X-TonePush-Purpose";
+
+/// Add one `key=value` pair to an address that may already carry a query.
+fn with_query(url: &str, pair: &str) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{separator}{pair}")
+}
+
 /// Search the configured TonePush deployment for desktop-library rows.
 pub fn discover(
     query: &str,
@@ -878,6 +1010,12 @@ pub fn discover_page(
 /// Fetch one discovered Tone from the configured TonePush deployment.
 pub fn download(tone: &ToneDetails) -> Result<ToneDelivery, String> {
     CloudClient::new(site()).download(tone)
+}
+
+/// Fetch one discovered Tone from the configured TonePush deployment, to keep
+/// or only to audition.
+pub fn download_for(tone: &ToneDetails, purpose: Purpose) -> Result<ToneDelivery, String> {
+    CloudClient::new(site()).download_for(tone, purpose)
 }
 
 /// The JSON body for creating one Song.
@@ -1034,6 +1172,272 @@ impl fmt::Display for PublishError {
     }
 }
 
+/// How a call to the signed-in API failed. Those endpoints are newer than the
+/// public catalog, and an older deployment or a `TONEPUSH_SITE` override may
+/// lack them, so a server that does not offer one is told apart from a
+/// server that refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiError {
+    /// The server does not offer this endpoint (an older deployment): a 404
+    /// whose body is not TonePush's JSON error, or a 405 or 501.
+    Unavailable,
+    /// 401: not signed in, or the session ended.
+    SignedOut,
+    /// 404 with TonePush's JSON body {"error": ...}: gone, or not yours.
+    NotFound(String),
+    /// Anything else, in TonePush's words, or a transport failure.
+    Failed(String),
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable => {
+                formatter.write_str("this TonePush server does not offer that yet")
+            }
+            Self::SignedOut => formatter.write_str("you are signed out of TonePush. Sign in again"),
+            Self::NotFound(_) => {
+                formatter.write_str("TonePush no longer has it, or it is not yours")
+            }
+            Self::Failed(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+/// Who can see a Tone or a setlist on TonePush. A hidden one stays out of
+/// the catalog, but its creator still sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    Everyone,
+    OnlyYou,
+}
+
+/// What to change on one of your Tones without uploading it again, sent as
+/// `{"tone": {...}}`. Only the fields that are `Some` travel, so the rest
+/// stay as they are.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ToneChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tuning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guitar_type: Option<String>,
+    /// single_coil, humbucker or p90.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pickup_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pickup_electronics: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+}
+
+/// What to change on one of your Songs, sent as `{"song": {...}}`. Only the
+/// fields that are `Some` travel, and tags, when sent, replace the list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SongChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+}
+
+/// A new setlist, sent as `{"setlist": {...}}`. It names a device TonePush
+/// already knows, by id or by product name, and every slot a published Tone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct NewSetlist {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub venue: Option<String>,
+    /// The day of the show, as YYYY-MM-DD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performed_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+    pub slots: Vec<NewSetlistSlot>,
+}
+
+/// One place in a new running order: a published Tone, and the version to
+/// play when it should not follow whichever version is current.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NewSetlistSlot {
+    pub tone_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+}
+
+/// What to change on one of your setlists, sent as `{"setlist": {...}}`.
+/// Only the fields that are `Some` travel. Slots, when sent, replace the
+/// whole running order, and a list TonePush refuses leaves the old one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SetlistChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub venue: Option<String>,
+    /// The day of the show, as YYYY-MM-DD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub performed_on: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<Visibility>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slots: Option<Vec<NewSetlistSlot>>,
+}
+
+/// Which of the signed-in endpoints a deployment offers, so the editor can
+/// leave out what an older server cannot do instead of failing on a click.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Capabilities {
+    /// Your account and Tones, editing, hiding and deleting them, and your
+    /// page on TonePush (S1, S2, S3, S4 and S7 in the library design).
+    pub account: bool,
+    /// Setlists (S6).
+    pub setlists: bool,
+}
+
+/// The signed-in part of the API: your account, editing and deleting what you
+/// published, and setlists.
+impl CloudClient {
+    fn api_url(&self, path: &str) -> String {
+        format!("{}/api/v1/{path}", self.base)
+    }
+
+    /// The signed-in account, with its public page once it has one.
+    pub fn me(&self, token: &str) -> Result<Me, ApiError> {
+        answer(api_request(self.http.get(self.api_url("me")), Some(token)).call())
+    }
+
+    /// Every Tone the account created, in any state and from any computer,
+    /// each with its Song and versions.
+    pub fn my_tones(&self, token: &str) -> Result<Vec<ToneDetails>, ApiError> {
+        answer(api_request(self.http.get(self.api_url("me/tones")), Some(token)).call())
+            .map(|response: TonesResponse| response.tones)
+    }
+
+    /// One Tone. With the session its creator also sees it while it is
+    /// hidden; without, only a published Tone answers.
+    pub fn tone_as(&self, token: Option<&str>, id: i64) -> Result<ToneDetails, ApiError> {
+        answer(api_request(self.http.get(format!("{}/{id}", self.tones_url())), token).call())
+    }
+
+    /// Change one of your Tones' details, or who can see it, without
+    /// uploading it again. The answer is the Tone as it now stands.
+    pub fn update_tone(
+        &self,
+        token: &str,
+        id: i64,
+        changes: &ToneChanges,
+    ) -> Result<ToneDetails, ApiError> {
+        let request = self.http.patch(format!("{}/{id}", self.tones_url()));
+        send_nested(request, token, "tone", changes)
+    }
+
+    /// Change one of your Songs' title, description or tags.
+    pub fn update_song(
+        &self,
+        token: &str,
+        id: i64,
+        changes: &SongChanges,
+    ) -> Result<SongDetails, ApiError> {
+        let request = self.http.patch(format!("{}/{id}", self.songs_url()));
+        send_nested(request, token, "song", changes)
+    }
+
+    /// Delete one of your Tones with its versions and files. TonePush also
+    /// removes its Song when that was your own Original with nothing else in
+    /// it. Copies people already downloaded stay theirs.
+    pub fn delete_tone(&self, token: &str, id: i64) -> Result<(), ApiError> {
+        let request = self.http.delete(format!("{}/{id}", self.tones_url()));
+        settle(api_request(request, Some(token)).call()).map(drop)
+    }
+
+    /// Your own setlists, newest first.
+    pub fn my_setlists(&self, token: &str) -> Result<Vec<SetlistSummary>, ApiError> {
+        answer(api_request(self.http.get(self.api_url("setlists")), Some(token)).call())
+            .map(|response: SetlistsResponse| response.setlists)
+    }
+
+    /// One setlist with its running order. Anyone may open a published one;
+    /// with the session its creator also opens it while it is hidden.
+    pub fn setlist(&self, token: Option<&str>, id: i64) -> Result<SetlistDetails, ApiError> {
+        let request = self.http.get(self.api_url(&format!("setlists/{id}")));
+        answer(api_request(request, token).call())
+    }
+
+    /// Create a setlist. A slot TonePush refuses is named in the error, such
+    /// as "Slot 2: Version number does not exist for this tone".
+    pub fn create_setlist(
+        &self,
+        token: &str,
+        setlist: &NewSetlist,
+    ) -> Result<SetlistDetails, ApiError> {
+        let request = self.http.post(self.api_url("setlists"));
+        send_nested(request, token, "setlist", setlist)
+    }
+
+    /// Change one of your setlists. Sent slots replace the whole running
+    /// order, and a list TonePush refuses leaves the old one in place.
+    pub fn update_setlist(
+        &self,
+        token: &str,
+        id: i64,
+        changes: &SetlistChanges,
+    ) -> Result<SetlistDetails, ApiError> {
+        let request = self.http.patch(self.api_url(&format!("setlists/{id}")));
+        send_nested(request, token, "setlist", changes)
+    }
+
+    /// Delete one of your setlists. The Tones in it stay.
+    pub fn delete_setlist(&self, token: &str, id: i64) -> Result<(), ApiError> {
+        let request = self.http.delete(self.api_url(&format!("setlists/{id}")));
+        settle(api_request(request, Some(token)).call()).map(drop)
+    }
+
+    /// Ask which of the signed-in endpoints this deployment offers. Without
+    /// a session a current server still shows its routes by asking for one.
+    pub fn probe(&self, token: Option<&str>) -> Capabilities {
+        Capabilities {
+            account: self.offers("me", token),
+            setlists: self.offers("setlists", token),
+        }
+    }
+
+    /// Whether this deployment has one endpoint. A success proves it, and so
+    /// does a request to sign in made in JSON, which only the endpoint itself
+    /// sends. A 404, 405 or 501, a page that is not JSON, or no answer at all
+    /// says the server does not have it.
+    fn offers(&self, path: &str, token: Option<&str>) -> bool {
+        let Ok(mut response) = api_request(self.http.get(self.api_url(path)), token).call() else {
+            return false;
+        };
+        match response.status().as_u16() {
+            200..=299 => true,
+            401 | 403 => response
+                .body_mut()
+                .read_to_string()
+                .ok()
+                .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                .is_some_and(|body| body.is_object()),
+            _ => false,
+        }
+    }
+}
+
 /// Ask the Song index what native files are already published, off the UI
 /// thread. Failure yields no value; a successful empty catalog yields an empty
 /// set so the library can still offer its first publish action.
@@ -1120,8 +1524,17 @@ pub struct Pairing {
     pub url: String,
 }
 
+/// How a pairing ended. A current deployment also names the account's slug
+/// and public page; an older one sends only the display name, and those stay
+/// `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Linked {
-    In { token: String, account: String },
+    In {
+        token: String,
+        account: String,
+        slug: Option<String>,
+        profile_url: Option<String>,
+    },
     GaveUp(String),
 }
 
@@ -1153,19 +1566,20 @@ pub fn poll_pairing(code: &str) -> Result<Option<Linked>, String> {
         .call()
         .map_err(|error| format!("TonePush stopped answering the pairing request: {error}"))?;
     let body: serde_json::Value = decode(response)?;
+    pairing_answer(&body)
+}
+
+/// Read one answer to a pairing poll: still waiting, linked, or given up.
+fn pairing_answer(body: &serde_json::Value) -> Result<Option<Linked>, String> {
+    let text = |key: &str| body.get(key).and_then(|value| value.as_str());
     match body.get("state").and_then(|state| state.as_str()) {
         Some("linked") => {
-            let token = body
-                .get("token")
-                .and_then(|token| token.as_str())
-                .ok_or("TonePush paired without returning a session token")?;
-            let account = body
-                .get("name")
-                .and_then(|name| name.as_str())
-                .unwrap_or("your account");
+            let token = text("token").ok_or("TonePush paired without returning a session token")?;
             Ok(Some(Linked::In {
                 token: token.to_owned(),
-                account: account.to_owned(),
+                account: text("name").unwrap_or("your account").to_owned(),
+                slug: text("slug").map(str::to_owned),
+                profile_url: text("profile_url").map(str::to_owned),
             }))
         }
         Some("pending") => Ok(None),
@@ -1178,6 +1592,70 @@ pub fn poll_pairing(code: &str) -> Result<Option<Linked>, String> {
 /// Publish a new Song and Tone against the configured site.
 pub fn publish(token: &str, request: &PublishRequest) -> Result<ToneDetails, PublishError> {
     CloudClient::new(site()).publish(token, request)
+}
+
+/// The signed-in account on the configured site.
+pub fn me(token: &str) -> Result<Me, ApiError> {
+    CloudClient::new(site()).me(token)
+}
+
+/// Every Tone the account created on the configured site.
+pub fn my_tones(token: &str) -> Result<Vec<ToneDetails>, ApiError> {
+    CloudClient::new(site()).my_tones(token)
+}
+
+/// One Tone from the configured site, hidden ones included for their creator.
+pub fn tone_as(token: Option<&str>, id: i64) -> Result<ToneDetails, ApiError> {
+    CloudClient::new(site()).tone_as(token, id)
+}
+
+/// Change one of your Tones on the configured site.
+pub fn update_tone(token: &str, id: i64, changes: &ToneChanges) -> Result<ToneDetails, ApiError> {
+    CloudClient::new(site()).update_tone(token, id, changes)
+}
+
+/// Change one of your Songs on the configured site.
+pub fn update_song(token: &str, id: i64, changes: &SongChanges) -> Result<SongDetails, ApiError> {
+    CloudClient::new(site()).update_song(token, id, changes)
+}
+
+/// Delete one of your Tones from the configured site.
+pub fn delete_tone(token: &str, id: i64) -> Result<(), ApiError> {
+    CloudClient::new(site()).delete_tone(token, id)
+}
+
+/// Your own setlists on the configured site.
+pub fn my_setlists(token: &str) -> Result<Vec<SetlistSummary>, ApiError> {
+    CloudClient::new(site()).my_setlists(token)
+}
+
+/// One setlist from the configured site.
+pub fn setlist(token: Option<&str>, id: i64) -> Result<SetlistDetails, ApiError> {
+    CloudClient::new(site()).setlist(token, id)
+}
+
+/// Create a setlist on the configured site.
+pub fn create_setlist(token: &str, setlist: &NewSetlist) -> Result<SetlistDetails, ApiError> {
+    CloudClient::new(site()).create_setlist(token, setlist)
+}
+
+/// Change one of your setlists on the configured site.
+pub fn update_setlist(
+    token: &str,
+    id: i64,
+    changes: &SetlistChanges,
+) -> Result<SetlistDetails, ApiError> {
+    CloudClient::new(site()).update_setlist(token, id, changes)
+}
+
+/// Delete one of your setlists from the configured site.
+pub fn delete_setlist(token: &str, id: i64) -> Result<(), ApiError> {
+    CloudClient::new(site()).delete_setlist(token, id)
+}
+
+/// Ask which of the signed-in endpoints the configured site offers.
+pub fn probe(token: Option<&str>) -> Capabilities {
+    CloudClient::new(site()).probe(token)
 }
 
 fn decode<T: DeserializeOwned>(
@@ -1215,6 +1693,91 @@ fn api_error(status: u16, body: &str) -> String {
         .filter(|message| !message.is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| format!("TonePush refused the request (HTTP {status})"))
+}
+
+/// Name the editor, ask for JSON, and carry the session when there is one.
+fn api_request<B>(
+    request: ureq::RequestBuilder<B>,
+    token: Option<&str>,
+) -> ureq::RequestBuilder<B> {
+    let request = request
+        .header("User-Agent", agent_name())
+        .header("Accept", "application/json");
+    match token {
+        Some(token) => request.header("Authorization", format!("Bearer {token}")),
+        None => request,
+    }
+}
+
+/// Send a JSON body nested under its resource's name, `{"tone": {...}}`, the
+/// way Rails reads it, and read the answer.
+fn send_nested<T: DeserializeOwned>(
+    request: ureq::RequestBuilder<ureq::typestate::WithBody>,
+    token: &str,
+    resource: &str,
+    value: &impl Serialize,
+) -> Result<T, ApiError> {
+    let body = serde_json::to_vec(&BTreeMap::from([(resource, value)])).map_err(|error| {
+        ApiError::Failed(format!("the {resource} could not be encoded: {error}"))
+    })?;
+    answer(
+        api_request(request, Some(token))
+            .content_type("application/json")
+            .send(body),
+    )
+}
+
+/// Read a JSON answer from the signed-in API.
+fn answer<T: DeserializeOwned>(
+    response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<T, ApiError> {
+    let body = settle(response)?;
+    serde_json::from_str(&body)
+        .map_err(|error| ApiError::Failed(format!("TonePush answered with invalid JSON: {error}")))
+}
+
+/// Read a successful answer's body, or say why there is none.
+fn settle(
+    response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<String, ApiError> {
+    let mut response =
+        response.map_err(|error| ApiError::Failed(format!("TonePush did not answer: {error}")))?;
+    let status = response.status().as_u16();
+    let body = response.body_mut().read_to_string();
+    if (200..300).contains(&status) {
+        return body.map_err(|error| {
+            ApiError::Failed(format!("TonePush answered nothing readable: {error}"))
+        });
+    }
+    Err(refusal(status, &body.unwrap_or_default()))
+}
+
+/// Say what a refusal means. TonePush answers a record that is missing, or
+/// not yours, with its own JSON error. A route the server does not have gets
+/// the framework's answer instead: an HTML page or, when JSON was asked for,
+/// Rails' generic `{"status": 404, "error": "Not Found"}`. TonePush's own
+/// errors never carry that numeric status. An older deployment also sends the
+/// generic answer for a record it cannot find, so there a missing Tone reads
+/// as not offered; such a deployment has none of the signed-in calls and
+/// cannot show a hidden Tone to its owner anyway.
+fn refusal(status: u16, body: &str) -> ApiError {
+    match status {
+        401 => ApiError::SignedOut,
+        404 if tonepush_error(body) => ApiError::NotFound(api_error(status, body)),
+        404 | 405 | 501 => ApiError::Unavailable,
+        _ => ApiError::Failed(api_error(status, body)),
+    }
+}
+
+/// Whether a body is TonePush's own JSON error, `{"error": ...}` or
+/// `{"errors": [...]}`, rather than the framework's generic one.
+fn tonepush_error(body: &str) -> bool {
+    let Ok(serde_json::Value::Object(body)) = serde_json::from_str::<serde_json::Value>(body)
+    else {
+        return false;
+    };
+    (body.contains_key("error") || body.contains_key("errors"))
+        && !body.get("status").is_some_and(serde_json::Value::is_number)
 }
 
 /// A small multipart encoder with Rails-style nested field names.
@@ -2016,5 +2579,839 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10));
         done_tx.send(()).unwrap();
         thread.join().unwrap();
+    }
+
+    /// A captured request's first line without the protocol, such as
+    /// `PATCH /api/v1/tones/34`.
+    fn request_line(request: &[u8]) -> String {
+        let request = String::from_utf8_lossy(request);
+        let line = request.lines().next().unwrap_or_default();
+        line.trim_end_matches(" HTTP/1.1").to_owned()
+    }
+
+    /// One header of a captured request, named in any case.
+    fn header(request: &[u8], name: &str) -> Option<String> {
+        let request = String::from_utf8_lossy(request);
+        let head = request.split("\r\n\r\n").next()?;
+        head.lines().skip(1).find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_owned())
+        })
+    }
+
+    fn json_body(request: &[u8]) -> serde_json::Value {
+        let request = String::from_utf8_lossy(request);
+        let (_, body) = request.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str(body).unwrap()
+    }
+
+    fn signed_with_test_token(request: &[u8]) -> bool {
+        header(request, "Authorization").as_deref() == Some("Bearer test-token")
+    }
+
+    /// An address nothing listens on, for a server that never answers.
+    fn closed_site() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    }
+
+    /// What a Rails deployment without a route answers a request for JSON.
+    const RAILS_NOT_FOUND: &[u8] = br#"{"status":404,"error":"Not Found"}"#;
+    const HTML_NOT_FOUND: &[u8] =
+        b"<!DOCTYPE html><html><body>The page you were looking for doesn't exist.</body></html>";
+
+    fn me_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": 7,
+            "name": "Public Name",
+            "slug": "public-name",
+            "profile_url": "https://tonepush.test/profiles/public-name"
+        })
+    }
+
+    fn setlist_json(id: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": "Album release show",
+            "venue": "Small Room",
+            "performed_on": "2026-11-14",
+            "visibility": "everyone",
+            "state": "published",
+            "device": {"id": 1, "name": "HX Stomp", "slug": "hx-stomp", "family": "Helix"},
+            "slot_count": 2,
+            "created_at": "2026-10-02T10:00:00Z",
+            "updated_at": "2026-10-02T11:00:00Z"
+        })
+    }
+
+    /// A setlist with one playable slot, held at an older version, and one
+    /// whose Tone was hidden after it was added.
+    fn setlist_details_json(id: i64) -> serde_json::Value {
+        let mut tone = tone_json(34, 12, "Wide Clean");
+        // A slot's Tone is its summary and Song: no hash, files or download.
+        for key in [
+            "file_sha256",
+            "parsed_metadata",
+            "dependencies",
+            "audio_previews",
+            "download",
+        ] {
+            tone.as_object_mut().unwrap().remove(key);
+        }
+        let mut setlist = setlist_json(id);
+        setlist["slots"] = serde_json::json!([
+            {
+                "position": 0,
+                "tone_id": 34,
+                "version": 2,
+                "available": true,
+                "tone": tone,
+                "download": {"artifact": "/tones/34/versions/2/artifact"}
+            },
+            {"position": 1, "tone_id": 35, "version": null, "available": false}
+        ]);
+        setlist
+    }
+
+    #[test]
+    fn older_tone_payloads_decode_without_auditions_or_visibility() {
+        let tone: ToneDetails = serde_json::from_value(tone_json(34, 12, "Wide Clean")).unwrap();
+
+        assert_eq!(tone.summary.auditions_count, 0);
+        assert_eq!(tone.summary.downloads_count, None);
+        assert_eq!(tone.summary.visibility, None);
+    }
+
+    #[test]
+    fn tone_payloads_count_auditions_apart_from_downloads() {
+        let mut json = tone_json(34, 12, "Wide Clean");
+        json["installs_count"] = 4.into();
+        json["downloads_count"] = 4.into();
+        json["auditions_count"] = 9.into();
+        json["visibility"] = "only_you".into();
+
+        let tone: ToneDetails = serde_json::from_value(json).unwrap();
+
+        assert_eq!(tone.summary.installs_count, 4);
+        assert_eq!(tone.summary.downloads_count, Some(4));
+        assert_eq!(tone.summary.auditions_count, 9);
+        assert_eq!(tone.summary.visibility.as_deref(), Some("only_you"));
+    }
+
+    /// TonePush must not count a play from the editor as a download, so an
+    /// audition carries its mark twice, and a download carries none.
+    #[test]
+    fn an_audition_is_marked_and_a_download_is_not() {
+        let server = StubServer::start_raw(vec![
+            (200, b"native preset".to_vec()),
+            (200, b"native preset".to_vec()),
+        ]);
+        let mut json = tone_json(34, 12, "Wide Clean");
+        json["file_sha256"] = crate::library::hash_of(b"native preset").into();
+        let tone: ToneDetails = serde_json::from_value(json).unwrap();
+        let client = CloudClient::new(&server.base);
+
+        assert_eq!(
+            client.download_for(&tone, Purpose::Audition).unwrap(),
+            ToneDelivery::Artifact(b"native preset".to_vec())
+        );
+        assert_eq!(
+            client.download(&tone).unwrap(),
+            ToneDelivery::Artifact(b"native preset".to_vec())
+        );
+
+        let requests = server.finish();
+        assert_eq!(
+            request_line(&requests[0]),
+            "GET /tones/34/artifact?purpose=audition"
+        );
+        assert_eq!(
+            header(&requests[0], "X-TonePush-Purpose").as_deref(),
+            Some("audition")
+        );
+        assert_eq!(request_line(&requests[1]), "GET /tones/34/artifact");
+        assert_eq!(header(&requests[1], "X-TonePush-Purpose"), None);
+    }
+
+    #[test]
+    fn an_audition_mark_joins_a_query_the_artifact_already_has() {
+        let server = StubServer::start_raw(vec![(200, b"native preset".to_vec())]);
+        let mut json = tone_json(34, 12, "Wide Clean");
+        json["download"] = serde_json::json!({"artifact": "/tones/34/artifact?version=2"});
+        json["file_sha256"] = crate::library::hash_of(b"native preset").into();
+        let tone: ToneDetails = serde_json::from_value(json).unwrap();
+
+        CloudClient::new(&server.base)
+            .download_for(&tone, Purpose::Audition)
+            .unwrap();
+
+        let request = server.finish().pop().unwrap();
+        assert_eq!(
+            request_line(&request),
+            "GET /tones/34/artifact?version=2&purpose=audition"
+        );
+    }
+
+    #[test]
+    fn me_sends_the_session_and_reads_the_account_page() {
+        let server = StubServer::start(vec![
+            (200, me_json()),
+            (
+                200,
+                serde_json::json!({"id": 8, "name": null, "slug": null, "profile_url": null}),
+            ),
+        ]);
+        let client = CloudClient::new(&server.base);
+
+        assert_eq!(
+            client.me("test-token").unwrap(),
+            Me {
+                id: 7,
+                name: Some("Public Name".into()),
+                slug: Some("public-name".into()),
+                profile_url: Some("https://tonepush.test/profiles/public-name".into()),
+            }
+        );
+        let nameless = client.me("test-token").unwrap();
+        assert_eq!(
+            (nameless.name, nameless.slug, nameless.profile_url),
+            (None, None, None)
+        );
+
+        let requests = server.finish();
+        assert_eq!(request_line(&requests[0]), "GET /api/v1/me");
+        assert!(signed_with_test_token(&requests[0]));
+        assert_eq!(
+            header(&requests[0], "Accept").as_deref(),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn my_tones_include_hidden_ones_with_their_song_and_versions() {
+        let mut hidden = tone_json(35, 12, "Wide Clean");
+        hidden["state"] = "draft".into();
+        hidden["visibility"] = "only_you".into();
+        hidden["versions"] = serde_json::json!([{
+            "number": 1,
+            "current": true,
+            "file_sha256": "b".repeat(64),
+            "created_at": "2026-10-01T10:00:00Z",
+            "download": {"artifact": "/tones/35/versions/1/artifact"}
+        }]);
+        let server = StubServer::start(vec![(
+            200,
+            serde_json::json!({"tones": [hidden, tone_json(34, 12, "Wide Clean")]}),
+        )]);
+
+        let tones = CloudClient::new(&server.base)
+            .my_tones("test-token")
+            .unwrap();
+
+        assert_eq!(tones.len(), 2);
+        assert_eq!(tones[0].summary.state, "draft");
+        assert_eq!(tones[0].summary.visibility.as_deref(), Some("only_you"));
+        assert_eq!(
+            tones[0].song.as_ref().map(|song| song.title.as_str()),
+            Some("Wide Clean")
+        );
+        assert_eq!(tones[0].versions.len(), 1);
+        let request = server.finish().pop().unwrap();
+        assert_eq!(request_line(&request), "GET /api/v1/me/tones");
+        assert!(signed_with_test_token(&request));
+    }
+
+    #[test]
+    fn a_tone_carries_the_session_only_when_there_is_one() {
+        let server = StubServer::start(vec![
+            (200, tone_json(34, 12, "Wide Clean")),
+            (200, tone_json(34, 12, "Wide Clean")),
+        ]);
+        let client = CloudClient::new(&server.base);
+
+        assert_eq!(
+            client.tone_as(Some("test-token"), 34).unwrap().summary.id,
+            34
+        );
+        assert_eq!(client.tone_as(None, 34).unwrap().summary.id, 34);
+
+        let requests = server.finish();
+        assert_eq!(request_line(&requests[0]), "GET /api/v1/tones/34");
+        assert!(signed_with_test_token(&requests[0]));
+        assert_eq!(request_line(&requests[1]), "GET /api/v1/tones/34");
+        assert_eq!(header(&requests[1], "Authorization"), None);
+    }
+
+    #[test]
+    fn the_pairing_answer_names_the_account_page() {
+        let linked = pairing_answer(&serde_json::json!({
+            "state": "linked",
+            "token": "test-token",
+            "name": "Public Name",
+            "slug": "public-name",
+            "profile_url": "https://tonepush.test/profiles/public-name"
+        }))
+        .unwrap();
+        assert_eq!(
+            linked,
+            Some(Linked::In {
+                token: "test-token".into(),
+                account: "Public Name".into(),
+                slug: Some("public-name".into()),
+                profile_url: Some("https://tonepush.test/profiles/public-name".into()),
+            })
+        );
+
+        // An older deployment sends only the display name.
+        let older = pairing_answer(&serde_json::json!({
+            "state": "linked",
+            "token": "test-token",
+            "name": "Public Name"
+        }))
+        .unwrap();
+        assert_eq!(
+            older,
+            Some(Linked::In {
+                token: "test-token".into(),
+                account: "Public Name".into(),
+                slug: None,
+                profile_url: None,
+            })
+        );
+
+        assert_eq!(
+            pairing_answer(&serde_json::json!({"state": "pending"})).unwrap(),
+            None
+        );
+        assert!(pairing_answer(&serde_json::json!({"state": "linked"})).is_err());
+    }
+
+    #[test]
+    fn a_tone_change_sends_only_what_changed() {
+        let mut changed = tone_json(34, 12, "Wide Clean");
+        changed["name"] = "Wide HX II".into();
+        changed["state"] = "draft".into();
+        changed["visibility"] = "only_you".into();
+        let server = StubServer::start(vec![(200, changed)]);
+
+        let tone = CloudClient::new(&server.base)
+            .update_tone(
+                "test-token",
+                34,
+                &ToneChanges {
+                    name: Some("Wide HX II".into()),
+                    pickup_type: Some("humbucker".into()),
+                    visibility: Some(Visibility::OnlyYou),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(tone.summary.name, "Wide HX II");
+        assert_eq!(tone.summary.visibility.as_deref(), Some("only_you"));
+        let request = server.finish().pop().unwrap();
+        assert_eq!(request_line(&request), "PATCH /api/v1/tones/34");
+        assert!(signed_with_test_token(&request));
+        assert_eq!(
+            header(&request, "Content-Type").as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(
+            json_body(&request),
+            serde_json::json!({"tone": {
+                "name": "Wide HX II",
+                "pickup_type": "humbucker",
+                "visibility": "only_you"
+            }})
+        );
+    }
+
+    #[test]
+    fn changes_use_the_servers_field_names() {
+        let everything = ToneChanges {
+            name: Some("Wide HX".into()),
+            description: Some("Wide and clean".into()),
+            part: Some("Clean".into()),
+            tuning: Some("Drop D".into()),
+            guitar_type: Some("Telecaster".into()),
+            pickup_type: Some("p90".into()),
+            pickup_electronics: Some("passive".into()),
+            visibility: Some(Visibility::Everyone),
+        };
+        assert_eq!(
+            serde_json::to_value(&everything).unwrap(),
+            serde_json::json!({
+                "name": "Wide HX",
+                "description": "Wide and clean",
+                "part": "Clean",
+                "tuning": "Drop D",
+                "guitar_type": "Telecaster",
+                "pickup_type": "p90",
+                "pickup_electronics": "passive",
+                "visibility": "everyone"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(ToneChanges::default()).unwrap(),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            serde_json::to_value(SetlistChanges::default()).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn a_song_change_sends_its_title_and_tags() {
+        let mut song = song_json(12, "Wide Clean Again");
+        song["tags"] = serde_json::json!(["ambient", "clean"]);
+        song["tones"] = serde_json::json!([]);
+        let server = StubServer::start(vec![(200, song)]);
+
+        let song = CloudClient::new(&server.base)
+            .update_song(
+                "test-token",
+                12,
+                &SongChanges {
+                    title: Some("Wide Clean Again".into()),
+                    tags: Some(vec!["ambient".into(), "clean".into()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(song.summary.title, "Wide Clean Again");
+        assert_eq!(song.summary.tags, ["ambient", "clean"]);
+        let request = server.finish().pop().unwrap();
+        assert_eq!(request_line(&request), "PATCH /api/v1/songs/12");
+        assert!(signed_with_test_token(&request));
+        assert_eq!(
+            json_body(&request),
+            serde_json::json!({"song": {
+                "title": "Wide Clean Again",
+                "tags": ["ambient", "clean"]
+            }})
+        );
+    }
+
+    #[test]
+    fn a_deleted_tone_is_done_when_tonepush_answers_no_content() {
+        let server = StubServer::start_raw(vec![(204, Vec::new())]);
+
+        CloudClient::new(&server.base)
+            .delete_tone("test-token", 34)
+            .unwrap();
+
+        let request = server.finish().pop().unwrap();
+        assert_eq!(request_line(&request), "DELETE /api/v1/tones/34");
+        assert!(signed_with_test_token(&request));
+    }
+
+    #[test]
+    fn my_setlists_are_listed_with_their_device() {
+        let server = StubServer::start(vec![(
+            200,
+            serde_json::json!({"setlists": [setlist_json(5)]}),
+        )]);
+
+        let setlists = CloudClient::new(&server.base)
+            .my_setlists("test-token")
+            .unwrap();
+
+        assert_eq!(
+            setlists,
+            [SetlistSummary {
+                id: 5,
+                name: "Album release show".into(),
+                venue: Some("Small Room".into()),
+                performed_on: Some("2026-11-14".into()),
+                visibility: "everyone".into(),
+                state: "published".into(),
+                device: SetlistDevice {
+                    id: 1,
+                    name: "HX Stomp".into(),
+                    slug: "hx-stomp".into(),
+                    family: Some("Helix".into()),
+                },
+                slot_count: 2,
+                created_at: "2026-10-02T10:00:00Z".into(),
+                updated_at: "2026-10-02T11:00:00Z".into(),
+            }]
+        );
+        let request = server.finish().pop().unwrap();
+        assert_eq!(request_line(&request), "GET /api/v1/setlists");
+        assert!(signed_with_test_token(&request));
+    }
+
+    #[test]
+    fn a_setlist_keeps_the_place_of_a_tone_hidden_since() {
+        let mut details = setlist_details_json(5);
+        // A slot that does not say whether it is available is playable.
+        details["slots"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("available");
+        let server = StubServer::start(vec![(200, details), (200, setlist_details_json(5))]);
+        let client = CloudClient::new(&server.base);
+
+        let setlist = client.setlist(None, 5).unwrap();
+        client.setlist(Some("test-token"), 5).unwrap();
+
+        assert_eq!(setlist.summary.name, "Album release show");
+        assert_eq!(setlist.slots.len(), 2);
+        let playable = &setlist.slots[0];
+        assert!(playable.available);
+        assert_eq!((playable.position, playable.version), (0, Some(2)));
+        let tone = playable.tone.as_ref().unwrap();
+        assert_eq!(tone.summary.name, "Wide HX");
+        assert_eq!(tone.file_sha256, None);
+        assert_eq!(
+            tone.song.as_ref().map(|song| song.title.as_str()),
+            Some("Wide Clean")
+        );
+        assert_eq!(
+            playable
+                .download
+                .as_ref()
+                .and_then(|download| download.artifact.as_deref()),
+            Some("/tones/34/versions/2/artifact")
+        );
+        let hidden = &setlist.slots[1];
+        assert_eq!(
+            (hidden.position, hidden.tone_id, hidden.version),
+            (1, 35, None)
+        );
+        assert!(!hidden.available);
+        assert!(hidden.tone.is_none() && hidden.download.is_none());
+
+        let requests = server.finish();
+        assert_eq!(request_line(&requests[0]), "GET /api/v1/setlists/5");
+        assert_eq!(header(&requests[0], "Authorization"), None);
+        assert!(signed_with_test_token(&requests[1]));
+    }
+
+    #[test]
+    fn a_new_setlist_posts_its_running_order() {
+        let server = StubServer::start(vec![(201, setlist_details_json(5))]);
+
+        let created = CloudClient::new(&server.base)
+            .create_setlist(
+                "test-token",
+                &NewSetlist {
+                    name: "Album release show".into(),
+                    venue: Some("Small Room".into()),
+                    performed_on: Some("2026-11-14".into()),
+                    device_name: Some("HX Stomp".into()),
+                    visibility: Some(Visibility::Everyone),
+                    slots: vec![
+                        NewSetlistSlot {
+                            tone_id: 34,
+                            version: Some(2),
+                        },
+                        NewSetlistSlot {
+                            tone_id: 35,
+                            version: None,
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(created.summary.id, 5);
+        assert_eq!(created.slots.len(), 2);
+        let request = server.finish().pop().unwrap();
+        assert_eq!(request_line(&request), "POST /api/v1/setlists");
+        assert!(signed_with_test_token(&request));
+        assert_eq!(
+            header(&request, "Content-Type").as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(
+            json_body(&request),
+            serde_json::json!({"setlist": {
+                "name": "Album release show",
+                "venue": "Small Room",
+                "performed_on": "2026-11-14",
+                "device_name": "HX Stomp",
+                "visibility": "everyone",
+                "slots": [{"tone_id": 34, "version": 2}, {"tone_id": 35}]
+            }})
+        );
+    }
+
+    #[test]
+    fn a_setlist_change_replaces_the_slots_only_when_it_sends_them() {
+        let server = StubServer::start(vec![
+            (200, setlist_details_json(5)),
+            (200, setlist_details_json(5)),
+        ]);
+        let client = CloudClient::new(&server.base);
+
+        client
+            .update_setlist(
+                "test-token",
+                5,
+                &SetlistChanges {
+                    name: Some("Rehearsal".into()),
+                    slots: Some(vec![NewSetlistSlot {
+                        tone_id: 34,
+                        version: None,
+                    }]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        client
+            .update_setlist(
+                "test-token",
+                5,
+                &SetlistChanges {
+                    visibility: Some(Visibility::OnlyYou),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let requests = server.finish();
+        assert_eq!(request_line(&requests[0]), "PATCH /api/v1/setlists/5");
+        assert!(signed_with_test_token(&requests[0]));
+        assert_eq!(
+            json_body(&requests[0]),
+            serde_json::json!({"setlist": {"name": "Rehearsal", "slots": [{"tone_id": 34}]}})
+        );
+        assert_eq!(
+            json_body(&requests[1]),
+            serde_json::json!({"setlist": {"visibility": "only_you"}})
+        );
+    }
+
+    #[test]
+    fn a_deleted_setlist_is_done_when_tonepush_answers_no_content() {
+        let server = StubServer::start_raw(vec![(204, Vec::new())]);
+
+        CloudClient::new(&server.base)
+            .delete_setlist("test-token", 5)
+            .unwrap();
+
+        let request = server.finish().pop().unwrap();
+        assert_eq!(request_line(&request), "DELETE /api/v1/setlists/5");
+        assert!(signed_with_test_token(&request));
+    }
+
+    #[test]
+    fn a_refused_setlist_names_the_slots_at_fault() {
+        let server = StubServer::start(vec![(
+            422,
+            serde_json::json!({"errors": [
+                "Slot 1: Tone must be published",
+                "Slot 2: Version number does not exist for this tone"
+            ]}),
+        )]);
+
+        let error = CloudClient::new(&server.base)
+            .create_setlist(
+                "test-token",
+                &NewSetlist {
+                    name: "Rehearsal".into(),
+                    device_name: Some("HX Stomp".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Slot 1: Tone must be published; \
+             Slot 2: Version number does not exist for this tone"
+        );
+        assert!(matches!(error, ApiError::Failed(_)));
+        server.finish();
+    }
+
+    /// An older deployment has none of the signed-in routes. Whatever it
+    /// answers for one, the editor must hear that it is not offered, never
+    /// that the record is gone.
+    #[test]
+    fn a_server_without_the_endpoint_is_told_apart_from_a_refusal() {
+        let server = StubServer::start_raw(vec![
+            (404, HTML_NOT_FOUND.to_vec()),
+            (404, RAILS_NOT_FOUND.to_vec()),
+            (405, Vec::new()),
+            (501, Vec::new()),
+        ]);
+        let client = CloudClient::new(&server.base);
+
+        for _ in 0..4 {
+            assert_eq!(client.me("test-token"), Err(ApiError::Unavailable));
+        }
+        server.finish();
+    }
+
+    #[test]
+    fn a_json_404_means_gone_or_not_yours() {
+        let server = StubServer::start(vec![(404, serde_json::json!({"error": "Not found."}))]);
+
+        let error = CloudClient::new(&server.base)
+            .update_tone(
+                "test-token",
+                34,
+                &ToneChanges {
+                    name: Some("Wide HX II".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error, ApiError::NotFound("Not found.".into()));
+        server.finish();
+    }
+
+    #[test]
+    fn a_401_means_signed_out() {
+        let server = StubServer::start(vec![(401, serde_json::json!({"error": "Sign in first."}))]);
+
+        assert_eq!(
+            CloudClient::new(&server.base).my_setlists("test-token"),
+            Err(ApiError::SignedOut)
+        );
+        server.finish();
+    }
+
+    #[test]
+    fn refusals_are_read_by_status_and_body() {
+        assert_eq!(refusal(401, ""), ApiError::SignedOut);
+        assert_eq!(
+            refusal(404, r#"{"errors": ["Gone"]}"#),
+            ApiError::NotFound("Gone".into())
+        );
+        assert_eq!(
+            refusal(404, &String::from_utf8_lossy(RAILS_NOT_FOUND)),
+            ApiError::Unavailable
+        );
+        assert_eq!(refusal(404, ""), ApiError::Unavailable);
+        assert_eq!(
+            refusal(405, r#"{"error": "Method Not Allowed"}"#),
+            ApiError::Unavailable
+        );
+        assert_eq!(
+            refusal(403, r#"{"error": "Not yours"}"#),
+            ApiError::Failed("Not yours".into())
+        );
+        assert_eq!(
+            refusal(500, "<html></html>"),
+            ApiError::Failed("TonePush refused the request (HTTP 500)".into())
+        );
+    }
+
+    #[test]
+    fn no_answer_at_all_is_a_failure() {
+        let error = CloudClient::new(closed_site())
+            .me("test-token")
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, ApiError::Failed(reason) if reason.starts_with("TonePush did not answer")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn api_errors_read_as_short_sentences() {
+        for error in [
+            ApiError::Unavailable,
+            ApiError::SignedOut,
+            ApiError::NotFound("Not found.".into()),
+            ApiError::Failed("Name can't be blank".into()),
+        ] {
+            let text = error.to_string();
+            assert!(!text.is_empty() && !text.ends_with('.'), "{text}");
+        }
+        assert_eq!(
+            ApiError::Failed("Name can't be blank".into()).to_string(),
+            "Name can't be blank"
+        );
+    }
+
+    #[test]
+    fn a_current_server_offers_the_account_and_setlists() {
+        let server = StubServer::start(vec![
+            (200, me_json()),
+            (200, serde_json::json!({"setlists": []})),
+        ]);
+
+        assert_eq!(
+            CloudClient::new(&server.base).probe(Some("test-token")),
+            Capabilities {
+                account: true,
+                setlists: true,
+            }
+        );
+
+        let requests = server.finish();
+        assert_eq!(request_line(&requests[0]), "GET /api/v1/me");
+        assert_eq!(request_line(&requests[1]), "GET /api/v1/setlists");
+        assert!(requests
+            .iter()
+            .all(|request| signed_with_test_token(request)));
+    }
+
+    #[test]
+    fn an_older_server_offers_neither() {
+        let server = StubServer::start_raw(vec![
+            (404, HTML_NOT_FOUND.to_vec()),
+            (404, RAILS_NOT_FOUND.to_vec()),
+        ]);
+
+        assert_eq!(
+            CloudClient::new(&server.base).probe(Some("test-token")),
+            Capabilities::default()
+        );
+        server.finish();
+    }
+
+    /// Without a session a current server still shows its routes: each one
+    /// asks for a sign-in in its own JSON.
+    #[test]
+    fn a_request_to_sign_in_shows_the_routes_exist() {
+        let server = StubServer::start(vec![
+            (401, serde_json::json!({"error": "Sign in first."})),
+            (401, serde_json::json!({"error": "Sign in first."})),
+        ]);
+
+        assert_eq!(
+            CloudClient::new(&server.base).probe(None),
+            Capabilities {
+                account: true,
+                setlists: true,
+            }
+        );
+
+        let requests = server.finish();
+        assert!(requests
+            .iter()
+            .all(|request| header(request, "Authorization").is_none()));
+    }
+
+    #[test]
+    fn the_probe_counts_nothing_else_as_offered() {
+        let server = StubServer::start_raw(vec![
+            (405, Vec::new()),
+            (401, b"<html>Sign in</html>".to_vec()),
+            (501, Vec::new()),
+            (500, br#"{"error": "Something broke"}"#.to_vec()),
+        ]);
+        let client = CloudClient::new(&server.base);
+
+        assert_eq!(client.probe(None), Capabilities::default());
+        assert_eq!(client.probe(None), Capabilities::default());
+        server.finish();
+
+        assert_eq!(
+            CloudClient::new(closed_site()).probe(Some("test-token")),
+            Capabilities::default()
+        );
     }
 }

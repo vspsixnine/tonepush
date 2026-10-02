@@ -36,15 +36,30 @@ pub(crate) enum Source {
     /// A tone on TonePush, by the key its file is cached under: its id, or
     /// for an older version the negative key `cloud_version_entry` gives it.
     TonePush(i64),
+    /// A setlist's slot: the tone it plays, the setlist's name and the slot.
+    Setlist {
+        hash: String,
+        setlist: String,
+        slot: i64,
+    },
 }
 
 impl Source {
     /// Where it came from, as the deck says it: "Auditioning, from your
     /// library".
-    pub(crate) fn words(&self) -> &'static str {
+    pub(crate) fn words(&self) -> String {
         match self {
-            Source::Library(_) => "from your library",
-            Source::TonePush(_) => "from TonePush",
+            Source::Library(_) => "from your library".to_owned(),
+            Source::TonePush(_) => "from TonePush".to_owned(),
+            Source::Setlist { setlist, .. } => format!("from {setlist}"),
+        }
+    }
+
+    /// The library tone it plays, when it is one.
+    pub(crate) fn hash(&self) -> Option<&str> {
+        match self {
+            Source::Library(hash) | Source::Setlist { hash, .. } => Some(hash),
+            Source::TonePush(_) => None,
         }
     }
 }
@@ -76,6 +91,8 @@ pub(crate) struct Strip {
     /// The pedal the library could be narrowed to, when it shows every
     /// pedal's tones.
     pub narrow: Option<String>,
+    /// Where it lives instead, for a tone hosted elsewhere: Open goes there.
+    pub open: Option<String>,
 }
 
 impl Strip {
@@ -84,8 +101,18 @@ impl Strip {
             icon,
             words: vec![(words.into(), false)],
             narrow: None,
+            open: None,
         }
     }
+}
+
+/// A tone shown, not played, while no pedal is connected: the editor shows
+/// its chain and faces read only, where the connect page was.
+pub(crate) struct Glimpse {
+    pub preview: crate::Preview,
+    pub marker: Option<crate::devices::Marker>,
+    /// Where it came from: "From your library".
+    pub from: String,
 }
 
 /// Which list the arrow keys step through: the last one clicked.
@@ -96,6 +123,8 @@ pub(crate) enum Arrows {
     Presets,
     /// The library's tones, as the table draws them.
     Tones,
+    /// TonePush's tones, as the Cloud draws them.
+    Cloud,
 }
 
 /// What the deck, the board and the sidebar say while a tone is auditioned.
@@ -104,9 +133,12 @@ pub(crate) struct Shown {
     /// The tone playing, or on its way.
     pub name: String,
     /// Where it came from: "from your library".
-    pub from: &'static str,
-    /// From TonePush, which the board names.
-    pub tonepush: bool,
+    pub from: String,
+    /// From somewhere the board names: TonePush, or a setlist.
+    pub named: bool,
+    /// What the deck says second, in place of what was set aside: a
+    /// setlist's "its 05A".
+    pub aside: Option<String>,
     /// Still on its way to the pedal.
     pub loading: bool,
     /// The preset set aside, and whether it had changes not saved.
@@ -122,19 +154,23 @@ impl Shown {
         } else {
             shell::State::Audition(format!("Auditioning, {}", self.from))
         }];
-        if tier != Tier::S && !self.set_aside.is_empty() {
-            parts.push(shell::State::Note(format!(
-                "{} is set aside",
-                self.set_aside
-            )));
+        if tier != Tier::S {
+            if let Some(aside) = &self.aside {
+                parts.push(shell::State::Note(aside.clone()));
+            } else if !self.set_aside.is_empty() {
+                parts.push(shell::State::Note(format!(
+                    "{} is set aside",
+                    self.set_aside
+                )));
+            }
         }
         parts
     }
 
     /// What the board's header says after its own words.
     pub(crate) fn board_note(&self) -> String {
-        if self.tonepush {
-            format!("Auditioning {}, from TonePush", self.name)
+        if self.named {
+            format!("Auditioning {}, {}", self.name, self.from)
         } else {
             format!("Auditioning {}", self.name)
         }
@@ -153,6 +189,10 @@ pub(crate) struct Hearing {
     pub arrows: Arrows,
     /// When Ctrl S last pointed at the bar, in the context's time.
     pub nudged: Option<f64>,
+    /// A tone shown read only while no pedal is connected.
+    pub glimpse: Option<Glimpse>,
+    /// The board and the face are drawing that tone this frame.
+    pub glimpsing: bool,
     next: i64,
 }
 
@@ -194,6 +234,15 @@ impl App {
             .is_some_and(|heard| &heard.source == source)
     }
 
+    /// The library tone playing, or asked to play, whichever list it came
+    /// from: its row in the library is marked too.
+    pub(crate) fn heard_hash(&self) -> Option<&str> {
+        self.hearing
+            .heard
+            .as_ref()
+            .and_then(|heard| heard.source.hash())
+    }
+
     /// Whether the bar, or the strip in its place, is on the pane.
     pub(crate) fn bar_shown(&self) -> bool {
         self.hearing.heard.is_some() || self.hearing.strip.is_some()
@@ -206,7 +255,13 @@ impl App {
         Some(Shown {
             name: heard.name.clone(),
             from: heard.source.words(),
-            tonepush: matches!(heard.source, Source::TonePush(_)),
+            named: !matches!(heard.source, Source::Library(_)),
+            aside: match &heard.source {
+                Source::Setlist { slot, .. } => {
+                    Some(format!("its {}", self.active_slot_label(*slot)))
+                }
+                _ => None,
+            },
             loading: self.heard_loading(),
             set_aside: set_aside.name,
             set_aside_dirty: set_aside.dirty,
@@ -270,6 +325,7 @@ impl App {
                     ),
                 ],
                 narrow: None,
+                open: None,
             });
         }
         if self.pro_active() && self.pro.updating() {
@@ -306,6 +362,7 @@ impl App {
             icon: Icon::Info,
             words,
             narrow,
+            open: None,
         })
     }
 
@@ -316,12 +373,74 @@ impl App {
         let Some(entry) = self.lib_entries.get(index).cloned() else {
             return;
         };
-        let source = Source::Library(entry.hash.clone());
+        self.audition_stored(Source::Library(entry.hash.clone()), &entry);
+    }
+
+    /// Play one of a library tone's older versions: the tone's row says
+    /// which pedal plays it, the version's bytes are what plays.
+    pub(crate) fn audition_version(&mut self, index: usize, hash: String, number: u32) {
+        let Some(mut entry) = self.lib_entries.get(index).cloned() else {
+            return;
+        };
+        entry.name = format!("{} v{number}", entry.name);
+        entry.hash = hash.clone();
+        self.audition_stored(Source::Library(hash), &entry);
+    }
+
+    /// Play a setlist's slot: the setlist's version of the tone, wherever
+    /// the pedal's own copy of that slot is.
+    pub(crate) fn audition_setlist_slot(&mut self, setlist: &str, slot: i64, tone: &library::Slot) {
+        let entry = self.entry_for_hash(&tone.hash, &tone.name);
+        self.audition_stored(
+            Source::Setlist {
+                hash: tone.hash.clone(),
+                setlist: setlist.to_owned(),
+                slot,
+            },
+            &entry,
+        );
+    }
+
+    /// A library tone as a row, for one that is not a row of its own: a
+    /// setlist's tone the library has let go, or an older version. What
+    /// the library recorded about it says which pedal plays it.
+    fn entry_for_hash(&self, hash: &str, name: &str) -> LibEntry {
+        if let Some(entry) = self.lib_entries.iter().find(|entry| entry.hash == hash) {
+            return entry.clone();
+        }
+        let meta = library::meta_of(hash).unwrap_or_default();
+        let marker = (!meta.pedal.is_empty())
+            .then(|| crate::devices::Marker::of_device(&meta.pedal, &meta.firmware))
+            .flatten();
+        LibEntry {
+            hash: hash.to_owned(),
+            series: hash.to_owned(),
+            name: name.to_owned(),
+            line: String::new(),
+            firmware: meta.firmware.clone(),
+            meta,
+            added_at: String::new(),
+            modified_at: String::new(),
+            downloads: None,
+            rating: None,
+            version: 1,
+            versions: 1,
+            chain: Vec::new(),
+            pro: library::kind(hash).as_deref() == Some("vxpreset"),
+            marker,
+        }
+    }
+
+    /// Play a tone the library stores, as the source says it came.
+    fn audition_stored(&mut self, source: Source, entry: &LibEntry) {
         if self.hears(&source) {
             return;
         }
         self.hearing.strip = None;
-        if let Some(strip) = self.cannot_play(&entry) {
+        if !self.pedal_online() {
+            return self.glimpse(entry);
+        }
+        if let Some(strip) = self.cannot_play(entry) {
             self.hearing.strip = Some(strip);
             return;
         }
@@ -347,6 +466,76 @@ impl App {
             }),
         }
         self.begin_hearing(key, source, name);
+    }
+
+    /// With no pedal, a click shows the tone where the editor would be,
+    /// read only, and the strip says what would make it play. A StompStation
+    /// PRO tone is only described: drawing its chain needs the pedal's own
+    /// schema.
+    fn glimpse(&mut self, entry: &LibEntry) {
+        let pedal = entry
+            .marker
+            .as_ref()
+            .map_or_else(|| "pedal".to_owned(), |marker| marker.device_name());
+        if entry.pro {
+            self.hearing.glimpse = None;
+            self.hearing.strip = Some(Strip {
+                icon: Icon::Usb,
+                words: vec![
+                    ("No pedal is connected, so ".to_owned(), false),
+                    (entry.name.clone(), true),
+                    (
+                        format!(
+                            " is not played. Its chain is drawn once a {pedal} is connected, \
+                             and the next click plays."
+                        ),
+                        false,
+                    ),
+                ],
+                narrow: None,
+                open: None,
+            });
+            return;
+        }
+        let Some(bytes) = library::read(&entry.hash) else {
+            return self.problem(format!("{} is missing from the library", entry.name));
+        };
+        let before = self.preview.take();
+        if library::kind(&entry.hash).as_deref() == Some("hlx") {
+            self.preview_hlx(&entry.name, bytes);
+        } else {
+            self.preview_hxpreset(&entry.name, bytes);
+        }
+        let preview = std::mem::replace(&mut self.preview, before);
+        self.hearing.glimpse = preview.map(|preview| Glimpse {
+            preview,
+            marker: entry.marker.clone(),
+            from: "From your library".to_owned(),
+        });
+        let shown = if self.hearing.glimpse.is_some() {
+            "shown, not played"
+        } else {
+            "not played"
+        };
+        self.hearing.strip = Some(Strip {
+            icon: Icon::Usb,
+            words: vec![
+                ("No pedal is connected, so ".to_owned(), false),
+                (entry.name.clone(), true),
+                (
+                    format!(" is {shown}. Plug in your {pedal} and the next click plays."),
+                    false,
+                ),
+            ],
+            narrow: None,
+            open: None,
+        });
+    }
+
+    /// Leave a tone shown with no pedal: the connect page comes back.
+    pub(crate) fn close_glimpse(&mut self) {
+        self.hearing.glimpse = None;
+        self.hearing.strip = None;
     }
 
     /// Put back what the audition set aside, its changes and history with
@@ -392,14 +581,20 @@ impl App {
             return;
         }
         let hash = match heard.source {
-            Source::Library(hash) => Some(hash),
+            Source::Library(hash) | Source::Setlist { hash, .. } => Some(hash),
             // Into the library first, so the slot is written from it.
             Source::TonePush(key) => self.keep_cloud_heard(key),
         };
-        if let Some(row) =
-            hash.and_then(|hash| self.lib_entries.iter().position(|entry| entry.hash == hash))
-        {
-            self.start_putting(&[row]);
+        if let Some(hash) = hash {
+            match self.lib_entries.iter().position(|entry| entry.hash == hash) {
+                Some(row) => self.start_putting(&[row]),
+                None => {
+                    // A setlist's tone the library let go: still its own.
+                    self.sending = Some(crate::put::Sending {
+                        tones: vec![(hash, heard.name.clone())],
+                    });
+                }
+            }
         }
     }
 
@@ -457,6 +652,50 @@ impl App {
         self.lib_anchor = Some(index);
         self.select_lib_entry(index);
         self.hearing.arrows = Arrows::Tones;
+    }
+
+    /// Step through TonePush's tones as the Cloud draws them, and play each:
+    /// each file is fetched once a session, and a fast run plays only the
+    /// tone stopped on.
+    pub(crate) fn step_cloud(&mut self, direction: i64, ctx: &egui::Context) {
+        let order = self.cloud_rows.clone();
+        if order.is_empty() || direction == 0 {
+            return;
+        }
+        let at = self
+            .cloud_selected
+            .and_then(|selected| order.iter().position(|&row| row == selected));
+        let next = match at {
+            Some(at) => (at as i64 + direction).clamp(0, order.len() as i64 - 1) as usize,
+            None if direction > 0 => 0,
+            None => order.len() - 1,
+        };
+        if Some(next) == at {
+            return;
+        }
+        self.cloud_selected = Some(order[next]);
+        self.cloud_reveal_near = true;
+        self.start_cloud_action(order[next], crate::CloudAction::Audition, ctx);
+    }
+
+    /// Space on TonePush's rows: play the chosen tone, or put back the one
+    /// playing.
+    pub(crate) fn space_on_cloud(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.cloud_selected else {
+            return;
+        };
+        let Some(id) = self
+            .cloud_entries
+            .get(index)
+            .map(|entry| entry.discovered.tone.summary.id)
+        else {
+            return;
+        };
+        if self.hears(&Source::TonePush(id)) {
+            self.put_back();
+        } else {
+            self.start_cloud_action(index, crate::CloudAction::Audition, ctx);
+        }
     }
 
     /// Space: play the chosen tone, or put back the one playing.
@@ -536,8 +775,23 @@ impl App {
                     self.put_back();
                 }
             }
+        } else if self.hearing.glimpse.is_some() && consume(Modifiers::NONE, Key::Escape) {
+            self.close_glimpse();
         } else if self.hearing.strip.is_some() && consume(Modifiers::NONE, Key::Escape) {
             self.hearing.strip = None;
+        }
+        let feed = self.hearing.arrows == Arrows::Cloud
+            && self.lib_showing == LibraryView::Cloud
+            && !self.library_folded(tier)
+            && self.sending.is_none();
+        if feed {
+            if consume(Modifiers::NONE, Key::ArrowDown) {
+                self.step_cloud(1, ctx);
+            } else if consume(Modifiers::NONE, Key::ArrowUp) {
+                self.step_cloud(-1, ctx);
+            } else if consume(Modifiers::NONE, Key::Space) {
+                self.space_on_cloud(ctx);
+            }
         }
         let tones = self.hearing.arrows == Arrows::Tones
             && self.lib_showing == LibraryView::Tones
@@ -596,6 +850,7 @@ impl App {
         let mut library = false;
         let mut back = false;
         let mut unlock = false;
+        let mut send_back = None;
         let mut step = 0;
         let nudge = self.hearing.nudged.and_then(|at| {
             let since = ui.input(|input| input.time) - at;
@@ -728,6 +983,21 @@ impl App {
                             };
                             theme::menu_note(ui, &note);
                         });
+                    if let Source::Setlist { slot, hash, .. } = &heard.source {
+                        let label = format!("Send to {}", self.active_slot_label(*slot));
+                        let refused = self.put_refusal();
+                        let sent = theme::Button::new(&label)
+                            .icon(Icon::Download)
+                            .enabled(!loading && refused.is_none())
+                            .show(ui)
+                            .on_hover_text(
+                                "Write the setlist's version back into its slot, asking first",
+                            )
+                            .on_disabled_hover_text(refused.unwrap_or_default());
+                        if sent.clicked() {
+                            send_back = Some((*slot, hash.clone()));
+                        }
+                    }
                     if matches!(heard.source, Source::TonePush(_)) && !small {
                         library |= theme::Button::new("Keep in library")
                             .icon(Icon::CloudDownload)
@@ -747,7 +1017,7 @@ impl App {
                         .show(ui)
                         .on_hover_text("Write the preset back exactly as it was, changes and all")
                         .clicked();
-                    if !small && self.hearing.arrows == Arrows::Tones {
+                    if !small && self.hearing.arrows != Arrows::Presets {
                         ui.spacing_mut().item_spacing.x = 5.0;
                         theme::label(
                             ui,
@@ -814,6 +1084,12 @@ impl App {
             n => format!(", with {n} changes"),
         };
         let mut parts: Vec<(String, bool)> = vec![(heard.name.clone(), true)];
+        if let Source::Setlist { slot: from, .. } = &heard.source {
+            parts.push((
+                format!(", the setlist's {},", self.active_slot_label(*from)),
+                false,
+            ));
+        }
         if small {
             parts.push((format!("{with} in {slot}"), false));
             if !set_aside.name.is_empty() {
@@ -848,6 +1124,9 @@ impl App {
         }
         if unlock {
             self.pro.back_up_here();
+        }
+        if let Some((slot, hash)) = send_back {
+            self.put_to(slot, vec![(hash, heard.name.clone())]);
         }
         if keep {
             self.keep_heard();
@@ -887,6 +1166,16 @@ impl App {
                     .id_salt("audition-strip-actions")
                     .layout(egui::Layout::right_to_left(egui::Align::Center)),
                 |ui| {
+                    if let Some(url) = &strip.open {
+                        if theme::Button::new("Open")
+                            .ghost()
+                            .icon(Icon::ExternalLink)
+                            .show(ui)
+                            .clicked()
+                        {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(url.clone()));
+                        }
+                    }
                     if let Some(pedal) = &strip.narrow {
                         narrow = theme::Button::new(&format!("Show only what the {pedal} plays"))
                             .ghost()
@@ -919,6 +1208,128 @@ impl App {
             self.hearing.strip = None;
             self.lib_selected = None;
             self.cloud_loaded_device = None;
+        }
+    }
+}
+
+impl App {
+    /// A tone shown, not played, with no pedal: its name and where it came
+    /// from in the deck, its chain on the board and the chosen block's face,
+    /// all read only, with the way back to the connect page.
+    pub(crate) fn glimpse_page(&mut self, root: &mut Ui, tier: Tier) {
+        let Some(mut glimpse) = self.hearing.glimpse.take() else {
+            return;
+        };
+        let mut back = false;
+        egui::Panel::top("glimpse-deck")
+            .exact_size(shell::deck_height(tier))
+            .resizable(false)
+            .frame(egui::Frame::new().fill(theme::bg()))
+            .show(root, |ui| {
+                let full = ui.max_rect();
+                let right = ui
+                    .scope_builder(
+                        egui::UiBuilder::new()
+                            .max_rect(full.with_max_x(full.right() - 16.0))
+                            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                        |ui| {
+                            back = theme::Button::new("Back to Plug in your pedal")
+                                .ghost()
+                                .icon(Icon::Usb)
+                                .hint("Esc")
+                                .show(ui)
+                                .clicked();
+                        },
+                    )
+                    .response
+                    .rect;
+                let left = full.left() + if self.sidebar_hidden { 12.0 } else { 20.0 };
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(Rect::from_min_max(
+                            Pos2::new(left, full.top()),
+                            Pos2::new(right.left() - 14.0, full.bottom()),
+                        ))
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        theme::Chip::new("Preview")
+                            .icon(Icon::Eye)
+                            .height(24.0)
+                            .show(ui);
+                        let width = ui.available_width();
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(width, 44.0),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                let size = tier.pick(theme::PRESET_NAME, theme::PRESET_NAME, 22.0);
+                                let title = shell::title_galley(
+                                    ui,
+                                    &glimpse.preview.name,
+                                    size,
+                                    theme::text(),
+                                    width,
+                                );
+                                let (place, _) = ui.allocate_exact_size(
+                                    Vec2::new(width, size + 4.0),
+                                    Sense::hover(),
+                                );
+                                shell::paint_line(ui, title, place.left(), place.center().y);
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    theme::label(
+                                        ui,
+                                        &glimpse.from,
+                                        theme::regular(12.0),
+                                        theme::muted(),
+                                    );
+                                    theme::label(ui, "·", theme::regular(12.0), theme::faint());
+                                    crate::library_view::marker(ui, glimpse.marker.as_ref(), true);
+                                    theme::label(ui, "·", theme::regular(12.0), theme::faint());
+                                    theme::label(
+                                        ui,
+                                        "Not playing: no pedal is connected",
+                                        theme::regular(12.0),
+                                        theme::muted(),
+                                    );
+                                });
+                            },
+                        );
+                    },
+                );
+            });
+
+        // The one renderer draws whatever chain the app holds, so for this
+        // page it holds the tone's, read only.
+        std::mem::swap(&mut self.chain, &mut glimpse.preview.chain);
+        std::mem::swap(&mut self.layout, &mut glimpse.preview.layout);
+        let selected = self.selected;
+        self.selected = self
+            .chain
+            .iter()
+            .position(|block| self.block_category(block).as_deref() == Some("Amp"))
+            .or_else(|| self.chain.iter().position(|block| self.is_effect(block)))
+            .unwrap_or(0);
+        self.display_only = true;
+        self.hearing.glimpsing = true;
+        self.signal_chain(root);
+        self.library_pane(root, tier);
+        let rect = root.available_rect_before_wrap();
+        let mut face = root.new_child(egui::UiBuilder::new().max_rect(rect));
+        face.disable();
+        self.pane(&mut face, tier);
+        self.hearing.glimpsing = false;
+        self.display_only = false;
+        self.selected = selected;
+        std::mem::swap(&mut self.chain, &mut glimpse.preview.chain);
+        std::mem::swap(&mut self.layout, &mut glimpse.preview.layout);
+        // A click in the library may have shown another tone meanwhile.
+        if self.hearing.glimpse.is_none() && !back {
+            self.hearing.glimpse = Some(glimpse);
+        }
+        if back {
+            self.close_glimpse();
         }
     }
 }
@@ -1167,6 +1578,148 @@ mod tests {
         );
         assert_eq!(strip.words[0], ("Velvet Drive".to_owned(), true));
         assert_eq!(strip.narrow.as_deref(), Some("HX Stomp"));
+    }
+
+    /// A setlist's slot plays the setlist's version, says where it came
+    /// from, and Send writes it back into its slot after asking.
+    #[test]
+    fn a_setlist_slot_plays_and_sends_back_to_its_slot() {
+        let _scratch = library::tests::Scratch::new("audition-setlist");
+        let (mut app, events, cmds) = app();
+        online(&mut app);
+        app.presets = (0..16).map(|index| format!("Preset {index}")).collect();
+        let tone = tone("Shimmer Pad", Marker::hx("Stomp"));
+        let slot = library::Slot {
+            hash: tone.hash.clone(),
+            name: tone.name.clone(),
+            file: String::new(),
+        };
+        app.audition_setlist_slot("Album release show", 12, &slot);
+        let (key, name) = played(&cmds);
+        assert_eq!(name, "Shimmer Pad");
+        events.send(Evt::Auditioning(Some(key))).unwrap();
+        app.drain_events();
+        let shown = app.shown_hearing().expect("shown");
+        assert_eq!(shown.from, "from Album release show");
+        assert_eq!(shown.aside.as_deref(), Some("its 05A"));
+        assert_eq!(
+            shown.board_note(),
+            "Auditioning Shimmer Pad, from Album release show"
+        );
+
+        app.put_to(12, vec![(slot.hash.clone(), slot.name.clone())]);
+        let asking = app
+            .put_question
+            .clone()
+            .expect("05A holds a preset: it asks");
+        assert_eq!(asking.writes[0].replaces.as_deref(), Some("Preset 12"));
+    }
+
+    /// An older version plays under its own number, against the same
+    /// baseline as any other tone.
+    #[test]
+    fn an_older_version_plays_under_its_number() {
+        let _scratch = library::tests::Scratch::new("audition-version");
+        let (mut app, _events, cmds) = app();
+        online(&mut app);
+        app.lib_entries = vec![tone("Plexi Crunch", Marker::hx("Stomp"))];
+        let older = library::store("Plexi Crunch", b"as it was", "hxpreset").unwrap();
+        app.audition_version(0, older.clone(), 1);
+        let (_, name) = played(&cmds);
+        assert_eq!(name, "Plexi Crunch v1");
+        assert!(app.hears(&Source::Library(older)));
+    }
+
+    /// With no pedal, a click plays nothing and says what would make it
+    /// play; the way back to the connect page is Esc.
+    #[test]
+    fn with_no_pedal_a_click_says_why_and_plays_nothing() {
+        let _scratch = library::tests::Scratch::new("audition-offline");
+        let (mut app, _events, cmds) = app();
+        app.connection = Connection::Offline;
+        app.lib_entries = vec![tone("Dream Pop", Marker::hx("Stomp"))];
+        app.audition_library(0);
+        assert!(cmds.try_recv().is_err());
+        assert!(!app.hearing());
+        let strip = app.hearing.strip.clone().expect("a reason");
+        let words: String = strip.words.iter().map(|(text, _)| text.as_str()).collect();
+        assert!(
+            words.starts_with("No pedal is connected, so Dream Pop is"),
+            "{words}"
+        );
+        assert!(words.ends_with("Plug in your HX Stomp and the next click plays."));
+        app.close_glimpse();
+        assert!(app.hearing.strip.is_none());
+    }
+
+    /// A TonePush tone hosted by another catalog is not opened on a click:
+    /// the strip says where it lives and offers the way there.
+    #[test]
+    fn a_tone_hosted_elsewhere_says_so_with_the_way_to_it() {
+        let (mut app, _events, _cmds) = app();
+        online(&mut app);
+        let mut tone: crate::cloud::ToneDetails =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/tone-details.json"))
+                .unwrap();
+        tone.download = Some(crate::cloud::ToneDownload {
+            artifact: None,
+            external: Some("https://line6.com/customtone/tone/123/".to_owned()),
+        });
+        let entry = crate::cloud::DiscoveredTone {
+            song: tone.song.clone().unwrap(),
+            tone,
+        };
+        let ctx = egui::Context::default();
+        app.start_cloud_entry_action(entry, crate::CloudAction::Audition, &ctx);
+        let strip = app.hearing.strip.clone().expect("a reason");
+        assert_eq!(
+            strip.words[0].0,
+            "Hosted by Line 6 CustomTone: TonePush cannot play it from here."
+        );
+        assert_eq!(
+            strip.open.as_deref(),
+            Some("https://line6.com/customtone/tone/123/")
+        );
+        assert!(app.cloud_download.is_none(), "nothing is fetched");
+    }
+
+    /// The arrows step through TonePush's tones as drawn, each played from
+    /// its file once it is here.
+    #[test]
+    fn stepping_through_tonepush_plays_each_tone() {
+        let (mut app, _events, cmds) = app();
+        online(&mut app);
+        let tone: crate::cloud::ToneDetails =
+            serde_json::from_str(include_str!("../tests/fixtures/cloud/tone-details.json"))
+                .unwrap();
+        let document = include_bytes!("../../hx-proto/tests/preset.bin").to_vec();
+        for id in [456, 457] {
+            let mut tone = tone.clone();
+            tone.summary.id = id;
+            tone.summary.name = format!("Tone {id}");
+            let discovered = crate::cloud::DiscoveredTone {
+                song: tone.song.clone().unwrap(),
+                tone,
+            };
+            app.cloud_entries.push(crate::CloudEntry {
+                row: App::cloud_row(&discovered),
+                discovered,
+            });
+            app.cloud_artifacts.insert(id, document.clone());
+        }
+        app.cloud_rows = vec![1, 0];
+        let ctx = egui::Context::default();
+        app.step_cloud(1, &ctx);
+        assert_eq!(app.cloud_selected, Some(1));
+        match cmds.try_recv() {
+            Ok(Cmd::AuditionDocument { key, name, .. }) => {
+                assert_eq!((key, name.as_str()), (457, "Tone 457"));
+            }
+            _ => panic!("the first row plays"),
+        }
+        app.step_cloud(1, &ctx);
+        assert_eq!(app.cloud_selected, Some(0));
+        assert!(app.hears(&Source::TonePush(456)));
     }
 
     /// A tone that fails to play takes the bar with it, and nothing it set
