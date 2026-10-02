@@ -18,12 +18,29 @@ pub(crate) enum Asked {
     /// Library tones, by hash: each becomes its tone's next version on
     /// TonePush, or a new Tone.
     Tones(Vec<String>),
-    /// A published tone under another name on TonePush: its file published
-    /// again, the name being typed.
-    Rename { hash: String, draft: String },
+    /// One of your tones under another name on TonePush, the name being
+    /// typed: renamed by the server where it can, else its file, which the
+    /// library holds, published again.
+    Rename {
+        tone_id: i64,
+        hash: Option<String>,
+        draft: String,
+    },
     /// An earlier version made the one people get: that version's file,
     /// which the library holds, published again.
     Current { hash: String, version: u32 },
+    /// A setlist of the library's, by its place in the list, as a list of
+    /// your published tones.
+    Setlist(usize),
+}
+
+/// What the sheet says, and why it cannot go ahead yet when it cannot.
+pub(crate) struct Sheet {
+    pub title: String,
+    pub body: String,
+    pub button: String,
+    pub tones: Vec<String>,
+    pub blocked: Option<String>,
 }
 
 /// One tone waiting to be published, and the name it goes under when that is
@@ -32,18 +49,23 @@ pub(crate) enum Asked {
 pub(crate) struct Queued {
     pub hash: String,
     pub name: Option<String>,
+    /// Kept for you alone once it is up, where the server can.
+    pub visibility: Option<cloud::Visibility>,
 }
 
 impl Queued {
     pub(crate) fn tone(hash: String) -> Queued {
-        Queued { hash, name: None }
+        Queued {
+            hash,
+            name: None,
+            visibility: None,
+        }
     }
 }
 
 /// What a tone is on TonePush, as far as this library knows: the record it
 /// kept when it published, and TonePush's last answer for it.
 pub(crate) struct OnTonePush {
-    pub record: library::Published,
     pub details: Option<cloud::ToneDetails>,
 }
 
@@ -99,6 +121,39 @@ pub(crate) fn publish_with(
     client.publish(token, request)
 }
 
+/// Publish a tone and, when it is for you alone, make sure TonePush keeps
+/// it so: an upload that did not take the choice is hidden right after.
+pub(crate) fn publish_hidden(
+    client: &cloud::CloudClient,
+    token: &str,
+    request: &cloud::PublishRequest,
+    existing: Option<(i64, i64)>,
+    visibility: Option<cloud::Visibility>,
+) -> Result<cloud::ToneDetails, cloud::PublishError> {
+    let tone = publish_with(client, token, request, existing)?;
+    let Some(visibility) = visibility else {
+        return Ok(tone);
+    };
+    if tone.summary.visibility.as_deref() == Some("only_you") {
+        return Ok(tone);
+    }
+    let changes = cloud::ToneChanges {
+        visibility: Some(visibility),
+        ..Default::default()
+    };
+    match client.update_tone(token, stable_id(&tone.summary), &changes) {
+        Ok(hidden) => Ok(hidden),
+        Err(why) => Err(cloud::PublishError::CreatingTone {
+            song_id: tone.summary.song_id,
+            created_song: None,
+            reason: format!(
+                "it is published, but TonePush did not keep it for you alone ({why}); hide it \
+                 from Mine"
+            ),
+        }),
+    }
+}
+
 /// The stable Tone a publish answered with: the root its versions share.
 pub(crate) fn stable_id(tone: &cloud::ToneSummary) -> i64 {
     tone.version_root_id.unwrap_or(tone.id)
@@ -119,8 +174,12 @@ impl App {
     }
 
     /// Ask for a published tone's new name on TonePush.
-    pub(crate) fn ask_to_rename_on_tonepush(&mut self, hash: String, name: String) {
-        self.publish_ask = Some(Asked::Rename { hash, draft: name });
+    pub(crate) fn ask_to_rename_on_tonepush(&mut self, tone_id: i64, hash: String, name: String) {
+        self.publish_ask = Some(Asked::Rename {
+            tone_id,
+            hash: Some(hash),
+            draft: name,
+        });
     }
 
     /// Ask before making an earlier version the one people get.
@@ -144,12 +203,16 @@ impl App {
             .get(&record.tone_id)
             .and_then(|answer| answer.as_ref().ok())
             .cloned();
-        Some(OnTonePush { record, details })
+        Some(OnTonePush { details })
     }
 
     /// Start publishing one queued tone: the next version of its Tone when
     /// this library published it before, else a new Tone under its Song.
     pub(crate) fn start_queued(&mut self, queued: Queued, ctx: &egui::Context) {
+        if !crate::account::REACHES_TONEPUSH {
+            self.publish_queue.clear();
+            return;
+        }
         let Some(token) = self.config.token.clone() else {
             self.publish_queue.clear();
             return self.problem("sign in first, and then the cloud will publish".into());
@@ -174,11 +237,16 @@ impl App {
             .published
             .get(&series)
             .map(|record| (record.tone_id, record.song_id));
+        let mut request = request;
+        let hidden = queued.visibility;
+        if hidden == Some(cloud::Visibility::OnlyYou) {
+            request.tone.tone.visibility = Some("only_you".to_owned());
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let client = cloud::CloudClient::new(cloud::site());
-            let _ = tx.send(publish_with(&client, &token, &request, existing));
+            let _ = tx.send(publish_hidden(&client, &token, &request, existing, hidden));
             ctx.request_repaint();
         });
         self.status.clear();
@@ -212,16 +280,28 @@ impl App {
         let Some(asked) = self.publish_ask.clone() else {
             return;
         };
+        if let Asked::Setlist(_) = asked {
+            // A setlist names published tones: TonePush's list of them is read
+            // before the sheet can say which are there.
+            self.list_account(ctx, false);
+        }
         let signed_in = self.config.token.is_some();
         let waiting = self.signing_in.as_ref().map(|signing| signing.code.clone());
-        let (title, body, button, tones) = self.sheet_words(&asked);
+        let sheet = self.sheet_words(&asked);
         let mut decided = None;
         let mut draft = match &asked {
             Asked::Rename { draft, .. } => Some(draft.clone()),
             _ => None,
         };
+        // Only you, where the server can keep a tone for you alone.
+        let hides = match &asked {
+            Asked::Setlist(_) => self.account.keeps_setlists(),
+            Asked::Rename { .. } => false,
+            _ => self.account.lists_tones(),
+        };
+        let mut visibility = self.publish_visibility;
         let (_, close) = theme::dialog(ctx, "publish-sheet", 520.0, |ui| {
-            theme::dialog_header(ui, &title, Some(&body));
+            theme::dialog_header(ui, &sheet.title, Some(&sheet.body));
             egui::Frame::new()
                 .inner_margin(egui::Margin {
                     left: 24,
@@ -245,9 +325,10 @@ impl App {
                             }
                         });
                     }
-                    match tones.as_slice() {
-                        [one] => self.sheet_tone(ui, one),
-                        several => {
+                    match (&asked, sheet.tones.as_slice()) {
+                        (Asked::Setlist(index), _) => self.sheet_setlist(ui, *index),
+                        (_, [one]) => self.sheet_tone(ui, one),
+                        (_, several) => {
                             sheet_row(ui, "Tones", |ui| {
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 6.0;
@@ -258,16 +339,44 @@ impl App {
                             });
                         }
                     }
-                    sheet_row(ui, "Who can see it", |ui| {
-                        ui.spacing_mut().item_spacing.x = 7.0;
-                        glyph(ui, Icon::Globe, 14.0, theme::text_soft());
-                        theme::label(
-                            ui,
-                            "Everyone, on tonepush.rocks",
-                            theme::regular(theme::BODY),
-                            theme::text(),
-                        );
-                    });
+                    if !matches!(asked, Asked::Rename { .. }) {
+                        sheet_row(ui, "Who can see it", |ui| {
+                            ui.spacing_mut().item_spacing.x = 7.0;
+                            if hides {
+                                let segments = [
+                                    theme::Segment::new("Everyone").icon(Icon::Globe),
+                                    theme::Segment::new("Only you").icon(Icon::EyeOff),
+                                ];
+                                let chosen = match visibility {
+                                    cloud::Visibility::Everyone => 0,
+                                    cloud::Visibility::OnlyYou => 1,
+                                };
+                                if let Some(index) = theme::segmented(
+                                    ui,
+                                    "publish-visibility",
+                                    &segments,
+                                    Some(chosen),
+                                    false,
+                                )
+                                .clicked
+                                {
+                                    visibility = if index == 0 {
+                                        cloud::Visibility::Everyone
+                                    } else {
+                                        cloud::Visibility::OnlyYou
+                                    };
+                                }
+                            } else {
+                                glyph(ui, Icon::Globe, 14.0, theme::text_soft());
+                                theme::label(
+                                    ui,
+                                    "Everyone, on tonepush.rocks",
+                                    theme::regular(theme::BODY),
+                                    theme::text(),
+                                );
+                            }
+                        });
+                    }
                     sheet_row(ui, "Published as", |ui| match &self.config.account {
                         Some(account) if signed_in => {
                             theme::label(ui, account, theme::regular(theme::BODY), theme::text());
@@ -288,10 +397,13 @@ impl App {
                             glyph(ui, Icon::Info, 14.0, theme::muted());
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(
+                                    egui::RichText::new(if matches!(asked, Asked::Setlist(_)) {
+                                        "Its name, venue and date are the library's; change them \
+                                         on its page first."
+                                    } else {
                                         "The song and tone details are the library's; change \
-                                         them in the tone's details first.",
-                                    )
+                                         them in the tone's details first."
+                                    })
                                     .font(theme::regular(12.5))
                                     .color(theme::muted()),
                                 )
@@ -300,19 +412,21 @@ impl App {
                         });
                     }
                 });
-            let note = match (&waiting, signed_in) {
-                (Some(code), _) => format!("Approve code {code} on tonepush.rocks to go on."),
-                (None, false) => {
+            let note = match (&waiting, signed_in, &sheet.blocked) {
+                (Some(code), _, _) => format!("Approve code {code} on tonepush.rocks to go on."),
+                (None, false, _) => {
                     "Signing in opens tonepush.rocks with a code to approve.".to_owned()
                 }
+                (None, true, Some(why)) => why.clone(),
                 _ => String::new(),
             };
             theme::dialog_footer(ui, &note, |ui| {
                 if signed_in {
-                    if theme::Button::new(&button)
+                    if theme::Button::new(&sheet.button)
                         .primary()
                         .icon(Icon::CloudUpload)
                         .hint("Enter")
+                        .enabled(sheet.blocked.is_none())
                         .show(ui)
                         .clicked()
                     {
@@ -336,12 +450,14 @@ impl App {
                 }
             });
         });
+        self.publish_visibility = visibility;
         if let (Some(draft), Some(Asked::Rename { draft: kept, .. })) =
             (draft.as_ref(), self.publish_ask.as_mut())
         {
             kept.clone_from(draft);
         }
         if signed_in
+            && sheet.blocked.is_none()
             && decided.is_none()
             && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
         {
@@ -355,19 +471,58 @@ impl App {
                 let Some(asked) = self.publish_ask.take() else {
                     return;
                 };
+                let hidden = (hides && visibility == cloud::Visibility::OnlyYou)
+                    .then_some(cloud::Visibility::OnlyYou);
+                self.publish_visibility = cloud::Visibility::Everyone;
                 let queued: Vec<Queued> = match asked {
-                    Asked::Tones(hashes) => hashes.into_iter().map(Queued::tone).collect(),
-                    Asked::Rename { hash, draft } => {
+                    Asked::Tones(hashes) => hashes
+                        .into_iter()
+                        .map(|hash| Queued {
+                            hash,
+                            name: None,
+                            visibility: hidden,
+                        })
+                        .collect(),
+                    Asked::Rename {
+                        tone_id,
+                        hash,
+                        draft,
+                    } => {
                         let name = draft.trim().to_owned();
                         if name.is_empty() {
                             return self.note("a tone needs a name".to_owned());
                         }
-                        vec![Queued {
-                            hash,
-                            name: Some(name),
-                        }]
+                        match hash {
+                            // The server renames it without a new upload.
+                            _ if self.account.lists_tones() => {
+                                self.rename_tone_on_tonepush(tone_id, name, ctx);
+                                return;
+                            }
+                            Some(hash) => vec![Queued {
+                                hash,
+                                name: Some(name),
+                                visibility: None,
+                            }],
+                            None => return,
+                        }
                     }
                     Asked::Current { hash, .. } => vec![Queued::tone(hash)],
+                    Asked::Setlist(index) => {
+                        let Some((_, setlist)) = self.lib_setlists.get(index).cloned() else {
+                            return;
+                        };
+                        match self.setlist_for_tonepush(&setlist) {
+                            Ok(mut new) => {
+                                new.visibility = hidden;
+                                self.create_setlist_on_tonepush(new, ctx);
+                            }
+                            Err(missing) => self.note(format!(
+                                "not on TonePush yet: {}",
+                                crate::put::listed(&missing)
+                            )),
+                        }
+                        return;
+                    }
                 };
                 self.publish_queue.extend(queued);
                 if self.publishing.is_none() {
@@ -376,14 +531,71 @@ impl App {
                     }
                 }
             }
-            Some(false) => self.publish_ask = None,
+            Some(false) => {
+                self.publish_ask = None;
+                self.publish_visibility = cloud::Visibility::Everyone;
+            }
             None => {}
         }
     }
 
-    /// The sheet's title, its sentence, its button and the tones it is about.
-    fn sheet_words(&self, asked: &Asked) -> (String, String, String, Vec<String>) {
-        match asked {
+    /// A setlist's rows on the sheet: what it is, its presets and which of
+    /// them TonePush does not have yet, and the pedal it is for.
+    fn sheet_setlist(&self, ui: &mut Ui, index: usize) {
+        let Some((_, setlist)) = self.lib_setlists.get(index) else {
+            return;
+        };
+        let what = [
+            setlist.name.as_str(),
+            setlist.venue.trim(),
+            setlist.date.trim(),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+        sheet_row(ui, "Setlist", |ui| {
+            theme::label(ui, &what, theme::regular(theme::BODY), theme::text());
+        });
+        let filled = setlist.filled();
+        sheet_row(ui, "Presets", |ui| {
+            let (words, ink) = match (&self.account.tones, self.setlist_for_tonepush(setlist)) {
+                (None, _) => ("Reading your tones on TonePush…".to_owned(), theme::muted()),
+                (Some(_), Ok(_)) => (
+                    format!("{filled}, each one of your tones on TonePush"),
+                    theme::text(),
+                ),
+                (Some(_), Err(missing)) => {
+                    let shown: Vec<String> = missing.iter().take(3).cloned().collect();
+                    let more = missing.len().saturating_sub(shown.len());
+                    let list = if more > 0 {
+                        format!("{} and {more} more", shown.join(", "))
+                    } else {
+                        crate::put::listed(&shown)
+                    };
+                    (format!("Not on TonePush yet: {list}"), theme::hot())
+                }
+            };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(words)
+                        .font(theme::regular(theme::BODY))
+                        .color(ink),
+                )
+                .wrap(),
+            );
+        });
+        sheet_row(ui, "For", |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let found = self.setlist_marker(setlist);
+            marker(ui, found.as_ref(), true);
+        });
+    }
+
+    /// The sheet's words, its button, the tones it is about, and why it
+    /// cannot go ahead yet.
+    fn sheet_words(&self, asked: &Asked) -> Sheet {
+        let (title, body, button, tones) = match asked {
             Asked::Tones(hashes) if hashes.len() > 1 => (
                 format!("Publish {} tones on TonePush?", hashes.len()),
                 "One after another, each as its tone's next version or a new Tone, stopping \
@@ -431,20 +643,26 @@ impl App {
                     ),
                 }
             }
-            Asked::Rename { hash, .. } => {
+            Asked::Rename { tone_id, hash, .. } => {
                 let name = self
-                    .on_tonepush(hash)
-                    .map(|on| on.record.name)
+                    .mine_row(*tone_id)
+                    .map(|row| row.name())
                     .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| self.tone_name(hash));
-                (
-                    format!("Rename {name} on TonePush?"),
+                    .or_else(|| hash.as_deref().map(|hash| self.tone_name(hash)))
+                    .unwrap_or_else(|| "this tone".to_owned());
+                let body = if self.account.lists_tones() {
+                    "Only its name changes on tonepush.rocks: its file, versions and downloads \
+                     stay, and the library keeps its own name for it."
+                } else {
                     "TonePush cannot rename a tone on its own yet, so its file is published \
                      again under the new name. Its page, downloads and versions stay; the \
                      library keeps its own name for it."
-                        .to_owned(),
+                };
+                (
+                    format!("Rename {name} on TonePush?"),
+                    body.to_owned(),
                     "Rename".to_owned(),
-                    vec![hash.clone()],
+                    hash.iter().cloned().collect(),
                 )
             }
             Asked::Current { hash, version } => {
@@ -459,6 +677,39 @@ impl App {
                     vec![hash.clone()],
                 )
             }
+            Asked::Setlist(index) => {
+                let name = self
+                    .lib_setlists
+                    .get(*index)
+                    .map(|(_, setlist)| setlist.name.clone())
+                    .unwrap_or_default();
+                (
+                    format!("Publish {name} on TonePush?"),
+                    "On TonePush a setlist is a list of your published tones, in the order the \
+                     pedal plays them, each the version this setlist holds."
+                        .to_owned(),
+                    "Publish setlist".to_owned(),
+                    Vec::new(),
+                )
+            }
+        };
+        let blocked = match asked {
+            Asked::Setlist(index) => match (&self.account.tones, self.lib_setlists.get(*index)) {
+                (None, _) => Some("Reading your tones on TonePush…".to_owned()),
+                (Some(_), Some((_, setlist))) => self
+                    .setlist_for_tonepush(setlist)
+                    .err()
+                    .map(|_| "Publish those tones first, then the setlist.".to_owned()),
+                (Some(_), None) => Some("That setlist is no longer in the library".to_owned()),
+            },
+            _ => None,
+        };
+        Sheet {
+            title,
+            body,
+            button,
+            tones,
+            blocked,
         }
     }
 
@@ -685,11 +936,6 @@ mod tests {
     #[test]
     fn the_sheet_counts_the_version_a_publish_becomes() {
         let on = OnTonePush {
-            record: library::Published {
-                tone_id: 34,
-                song_id: 12,
-                ..Default::default()
-            },
             details: Some({
                 let mut tone: cloud::ToneDetails =
                     serde_json::from_str(include_str!("../tests/fixtures/cloud/tone-details.json"))

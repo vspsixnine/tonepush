@@ -1068,6 +1068,9 @@ pub struct NewTone {
     pub output_target: Option<String>,
     pub chain_content: Option<String>,
     pub character: Option<String>,
+    /// "only_you" to keep it for its creator alone, where TonePush can; an
+    /// older deployment leaves it out and publishes it for everyone.
+    pub visibility: Option<String>,
     pub blocks: Vec<serde_json::Value>,
     pub parsed_metadata: serde_json::Value,
     pub preset: Option<PresetUpload>,
@@ -1099,6 +1102,7 @@ impl CreateToneRequest {
             ("output_target", self.tone.output_target.as_deref()),
             ("chain_content", self.tone.chain_content.as_deref()),
             ("character", self.tone.character.as_deref()),
+            ("visibility", self.tone.visibility.as_deref()),
         ] {
             if let Some(value) = value {
                 form.field(&format!("tone[{field}]"), value);

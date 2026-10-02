@@ -79,7 +79,7 @@ enum Answer {
 }
 
 /// "14C", "14C and 15A", "14C, 15A and 15B".
-fn listed(words: &[String]) -> String {
+pub(crate) fn listed(words: &[String]) -> String {
     match words {
         [] => String::new(),
         [one] => one.clone(),

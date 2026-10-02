@@ -27,6 +27,8 @@ pub(crate) enum MenuFor {
     SetlistSlot { setlist: usize, slot: usize },
     /// One of your tones on TonePush, by its id there.
     Mine(i64),
+    /// One of your setlists on TonePush, by its id there.
+    MineSetlist(i64),
 }
 
 /// What a menu asked for, carried out once it has closed.
@@ -62,6 +64,10 @@ enum Act {
     MineRename(i64),
     PublishHash(String),
     MakeCurrent(String, u32),
+    ToneVisibility(i64, cloud::Visibility),
+    DeleteYours(crate::account::Yours),
+    SetlistVisibility(i64, cloud::Visibility),
+    PublishSetlist(usize),
 }
 
 fn menu_id() -> egui::Id {
@@ -121,6 +127,7 @@ impl App {
                     self.setlist_slot_menu(ui, *setlist, *slot)
                 }
                 MenuFor::Mine(tone_id) => self.mine_menu(ui, *tone_id),
+                MenuFor::MineSetlist(id) => self.mine_setlist_menu(ui, *id),
             };
         });
         if shown.is_none() {
@@ -472,6 +479,11 @@ impl App {
         if theme::menu_item(ui, Some(Icon::FileDown), "Export…", None).clicked() {
             act = Some(Act::SetlistExport(index));
         }
+        if self.account.keeps_setlists()
+            && theme::menu_item(ui, Some(Icon::CloudUpload), "Publish on TonePush…", None).clicked()
+        {
+            act = Some(Act::PublishSetlist(index));
+        }
         theme::menu_separator(ui);
         if danger_keyed(ui, "Delete…", &["Del"]) {
             act = Some(Act::SetlistDelete(index));
@@ -675,6 +687,23 @@ impl App {
                 }
             });
         }
+        // Who can see it, where the server can change that.
+        let other = match self.tone_visibility(tone_id) {
+            Some(cloud::Visibility::Everyone) => Some((
+                Icon::EyeOff,
+                "Hide from everyone",
+                cloud::Visibility::OnlyYou,
+            )),
+            Some(cloud::Visibility::OnlyYou) => {
+                Some((Icon::Globe, "Show to everyone", cloud::Visibility::Everyone))
+            }
+            None => None,
+        };
+        if let Some((icon, words, visibility)) = other {
+            if theme::menu_item(ui, Some(icon), words, None).clicked() {
+                act = Some(Act::ToneVisibility(tone_id, visibility));
+            }
+        }
         theme::menu_separator(ui);
         if let Some(url) = self.mine_url(&row) {
             if theme::menu_item(ui, Some(Icon::ExternalLink), "Open on tonepush.rocks", None)
@@ -686,6 +715,71 @@ impl App {
                 act = Some(Act::CopyLink(url));
             }
         }
+        if self.account.lists_tones() {
+            theme::menu_separator(ui);
+            if danger_keyed(ui, "Delete from TonePush…", &["Del"]) {
+                act = Some(Act::DeleteYours(crate::account::Yours::Tone(tone_id)));
+            }
+        }
+        act
+    }
+
+    /// The menu of one of your setlists on TonePush.
+    fn mine_setlist_menu(&self, ui: &mut egui::Ui, id: i64) -> Option<Act> {
+        let setlist = self
+            .account
+            .setlists
+            .as_ref()?
+            .iter()
+            .find(|setlist| setlist.id == id)?
+            .clone();
+        let mut act = None;
+        theme::menu_header(
+            ui,
+            &setlist.name,
+            Some(&format!("yours · {} presets", setlist.slot_count)),
+        );
+        let local = self.local_setlist_named(&setlist.name);
+        let refused = match local {
+            None => Some((
+                "not in this library".to_owned(),
+                "This library has no setlist of that name to put on the pedal".to_owned(),
+            )),
+            Some(_) if !self.pedal_online() => Some((
+                "no pedal".to_owned(),
+                "Connect a pedal to put it on".to_owned(),
+            )),
+            Some(_) => None,
+        };
+        if keyed(
+            ui,
+            Icon::Download,
+            &format!("Put on {}…", self.device_words()),
+            &[],
+            refused.as_ref(),
+        ) {
+            if let Some(index) = local {
+                act = Some(Act::SetlistPut(index));
+            }
+        }
+        if let Some(index) = local {
+            if theme::menu_item(ui, Some(Icon::ListMusic), "Show in your setlists", None).clicked()
+            {
+                act = Some(Act::SetlistShow(index));
+            }
+        }
+        theme::menu_separator(ui);
+        if setlist.visibility == "only_you" {
+            if theme::menu_item(ui, Some(Icon::Globe), "Show to everyone", None).clicked() {
+                act = Some(Act::SetlistVisibility(id, cloud::Visibility::Everyone));
+            }
+        } else if theme::menu_item(ui, Some(Icon::EyeOff), "Hide from everyone", None).clicked() {
+            act = Some(Act::SetlistVisibility(id, cloud::Visibility::OnlyYou));
+        }
+        theme::menu_separator(ui);
+        if danger_keyed(ui, "Delete from TonePush…", &["Del"]) {
+            act = Some(Act::DeleteYours(crate::account::Yours::Setlist(id)));
+        }
         act
     }
 
@@ -695,6 +789,9 @@ impl App {
         &self,
         row: &crate::mine::MineRow,
     ) -> Option<(String, String)> {
+        if self.account.lists_tones() {
+            return None;
+        }
         let file = row
             .details
             .as_ref()
@@ -717,6 +814,14 @@ impl App {
         let Some(row) = self.mine_row(tone_id) else {
             return;
         };
+        if self.account.lists_tones() {
+            self.publish_ask = Some(crate::publish::Asked::Rename {
+                tone_id,
+                hash: None,
+                draft: row.name(),
+            });
+            return;
+        }
         if let Some((_, why)) = self.mine_rename_refusal(&row) {
             return self.note(why);
         }
@@ -726,7 +831,7 @@ impl App {
             .and_then(|tone| tone.file_sha256.clone())
             .unwrap_or_default();
         if let Some(hash) = self.mine_local_version(&row, &file) {
-            self.ask_to_rename_on_tonepush(hash, row.name());
+            self.ask_to_rename_on_tonepush(tone_id, hash, row.name());
         }
     }
 
@@ -897,6 +1002,14 @@ impl App {
             Act::MineRename(tone_id) => self.rename_on_tonepush(tone_id),
             Act::PublishHash(hash) => self.ask_to_publish(vec![hash]),
             Act::MakeCurrent(hash, version) => self.ask_to_make_current(hash, version),
+            Act::ToneVisibility(id, visibility) => self.set_tone_visibility(id, visibility, ctx),
+            Act::SetlistVisibility(id, visibility) => {
+                self.set_setlist_visibility(id, visibility, ctx);
+            }
+            Act::DeleteYours(yours) => self.account.confirm_delete = Some(yours),
+            Act::PublishSetlist(index) => {
+                self.publish_ask = Some(crate::publish::Asked::Setlist(index));
+            }
             Act::SlotShow(setlist, slot) => {
                 let row = self
                     .setlist_slot(setlist, slot)
@@ -1196,6 +1309,16 @@ impl App {
                     && self.pane.cloud_scope == crate::library_pane::CloudScope::Mine
                     && !folded =>
             {
+                // A setlist chosen: its keys are deleting it and its menu.
+                if let Some(id) = self.mine.selected_setlist {
+                    if consume(Modifiers::NONE, Key::Delete) {
+                        self.account.confirm_delete = Some(crate::account::Yours::Setlist(id));
+                    } else if consume(Modifiers::SHIFT, Key::F10) {
+                        let at = self.keyboard_menu_at(ctx);
+                        self.open_row_menu(ctx, MenuFor::MineSetlist(id), at);
+                    }
+                    return;
+                }
                 let Some(tone_id) = self.mine.selected else {
                     return;
                 };
@@ -1209,6 +1332,11 @@ impl App {
                         .is_some_and(|row| row.local.is_none())
                     {
                         self.mine_show_or_keep(tone_id, ctx);
+                    }
+                } else if consume(Modifiers::NONE, Key::Delete) {
+                    // Deleting from TonePush needs the server's help.
+                    if self.account.lists_tones() {
+                        self.account.confirm_delete = Some(crate::account::Yours::Tone(tone_id));
                     }
                 } else if consume(Modifiers::SHIFT, Key::F10) {
                     let at = self.keyboard_menu_at(ctx);

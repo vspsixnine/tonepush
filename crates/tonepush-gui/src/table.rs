@@ -43,6 +43,10 @@ pub enum Cell {
     Dim(String),
     /// Text that asks for attention, in the hot voice: "v2 · library has v3".
     Hot(String),
+    /// A group's caption across its row, spaced capitals: "SETLISTS 2".
+    Group(String),
+    /// Words after a small icon: who can see a tone, "Everyone".
+    Seen { icon: theme::Icon, text: String },
     /// A tone's name, in the row's strongest weight, with a quieter tag after
     /// it for a tone from another pedal family ("PRO").
     Name { text: String, tag: Option<String> },
@@ -87,7 +91,10 @@ impl Cell {
     /// header gathers everything that needs doing.
     fn key(&self) -> SortKey {
         match self {
-            Cell::Text(t) | Cell::Dim(t) | Cell::Hot(t) => SortKey::Text(t.to_lowercase()),
+            Cell::Text(t) | Cell::Dim(t) | Cell::Hot(t) | Cell::Group(t) => {
+                SortKey::Text(t.to_lowercase())
+            }
+            Cell::Seen { text, .. } => SortKey::Text(text.to_lowercase()),
             Cell::Name { text, .. } | Cell::Pair { text, .. } => SortKey::Text(text.to_lowercase()),
             Cell::Value { key, .. } | Cell::Chain { key, .. } => SortKey::Text(key.clone()),
             Cell::Stars { rating, .. } => SortKey::Text(rating.to_string()),
@@ -817,6 +824,44 @@ impl egui_table::TableDelegate for Delegate<'_> {
                     room,
                 );
                 shell::paint_line(ui, galley, left, y);
+            }
+            Cell::Group(text) => {
+                // A caption is not clipped to its column: it reads across
+                // the row, as the group's heading. Only the copy egui_table
+                // shows paints it, so it is not drawn twice.
+                if visible {
+                    let galley = ui.painter().layout_job(theme::paint::spaced(
+                        &text.to_uppercase(),
+                        theme::semibold(theme::CAPTION),
+                        theme::muted(),
+                        0.07,
+                    ));
+                    let mut painter = ui.painter().clone();
+                    painter.set_clip_rect(ui.clip_rect().with_max_x(rect.left() + 320.0));
+                    let height = galley.size().y;
+                    painter.galley(
+                        Pos2::new(left + 8.0, y - height / 2.0),
+                        galley,
+                        Color32::PLACEHOLDER,
+                    );
+                }
+            }
+            Cell::Seen { icon, text } => {
+                theme::paint_icon(
+                    ui,
+                    *icon,
+                    Pos2::new(left + 7.0, y),
+                    14.0,
+                    theme::text_soft(),
+                );
+                let galley = shell::elided(
+                    ui,
+                    text.clone(),
+                    theme::regular(theme::BODY),
+                    theme::text_soft(),
+                    room - 22.0,
+                );
+                shell::paint_line(ui, galley, left + 22.0, y);
             }
             Cell::Name { text, tag } => {
                 let tag = tag.as_ref().map(|tag| {

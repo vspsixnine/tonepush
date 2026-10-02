@@ -230,6 +230,18 @@ impl App {
                     .show(|ui| {
                         theme::menu_width(ui, 200.0);
                         theme::menu_header(ui, &account, Some("TonePush"));
+                        if let Some(page) = self.config.profile_url.clone() {
+                            if theme::menu_item(
+                                ui,
+                                Some(Icon::User),
+                                "Your page on tonepush.rocks",
+                                None,
+                            )
+                            .clicked()
+                            {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(page));
+                            }
+                        }
                         if theme::menu_item(ui, Some(Icon::ExternalLink), "Open TonePush", None)
                             .clicked()
                         {

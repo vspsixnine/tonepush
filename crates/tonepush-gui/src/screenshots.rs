@@ -162,10 +162,21 @@ enum Scene {
     HxPublishSeveral,
     /// Cloud, Mine: what this library published, Slapback Twang's menu open.
     HxMine,
+    /// Cloud, Mine with the server's account: setlists and tones from any
+    /// computer, Album release show chosen.
+    HxMineAccount,
+    /// Deleting Slapback Twang from TonePush: the question.
+    HxMineDelete,
+    /// Your tone's menu with the server's items: Hide, Delete.
+    HxMineAccountMenu,
+    /// Publishing for you alone, where the server can hide a tone.
+    HxPublishAccount,
+    /// Album release show about to go on TonePush, two of its tones not.
+    HxPublishSetlist,
 }
 
 impl Scene {
-    const ALL: [Scene; 62] = [
+    const ALL: [Scene; 67] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -228,6 +239,11 @@ impl Scene {
         Scene::HxPublish,
         Scene::HxPublishSeveral,
         Scene::HxMine,
+        Scene::HxMineAccount,
+        Scene::HxMineDelete,
+        Scene::HxMineAccountMenu,
+        Scene::HxPublishAccount,
+        Scene::HxPublishSetlist,
     ];
 
     fn name(self) -> &'static str {
@@ -294,6 +310,11 @@ impl Scene {
             Scene::HxPublish => "hx-publish",
             Scene::HxPublishSeveral => "hx-publish-several",
             Scene::HxMine => "hx-mine",
+            Scene::HxMineAccount => "hx-mine-account",
+            Scene::HxMineDelete => "hx-mine-delete",
+            Scene::HxMineAccountMenu => "hx-mine-account-menu",
+            Scene::HxPublishAccount => "hx-publish-account",
+            Scene::HxPublishSetlist => "hx-publish-setlist",
         }
     }
 
@@ -327,7 +348,7 @@ impl Scene {
                 slot: 4,
             }),
             Scene::HxMenuCloud => Some(MenuFor::Cloud(0)),
-            Scene::HxMine => app.mine.selected.map(MenuFor::Mine),
+            Scene::HxMine | Scene::HxMineAccountMenu => app.mine.selected.map(MenuFor::Mine),
             _ => None,
         }
     }
@@ -677,6 +698,45 @@ impl Scene {
                 app.library_device_filter = None;
                 mine_fixture(app);
                 tall_pane(app);
+            }
+            Scene::HxMineAccount | Scene::HxMineDelete | Scene::HxMineAccountMenu => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                mine_fixture(app);
+                account_fixture(app);
+                tall_pane(app);
+                if self == Scene::HxMineAccount {
+                    app.mine.selected_setlist = app
+                        .account
+                        .setlists
+                        .as_ref()
+                        .and_then(|setlists| setlists.first())
+                        .map(|setlist| setlist.id);
+                }
+                if self == Scene::HxMineDelete {
+                    app.account.confirm_delete = app.mine.selected.map(crate::account::Yours::Tone);
+                }
+            }
+            Scene::HxPublishAccount => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                mine_fixture(app);
+                account_fixture(app);
+                app.lib_showing = crate::LibraryView::Tones;
+                let index = tone_named(app, "Surf Spring");
+                app.choose_tone(index);
+                app.lib_reveal = true;
+                app.ask_to_publish(vec![app.lib_entries[index].hash.clone()]);
+                app.publish_visibility = crate::cloud::Visibility::OnlyYou;
+            }
+            Scene::HxPublishSetlist => {
+                hx_stomp(app);
+                mine_fixture(app);
+                account_fixture(app);
+                app.lib_showing = crate::LibraryView::Setlists;
+                app.select_setlist_entry(0);
+                tall_pane(app);
+                app.publish_ask = Some(crate::publish::Asked::Setlist(0));
             }
             Scene::HxDragSetlist => {
                 hx_stomp(app);
@@ -1258,7 +1318,7 @@ impl Demo {
                 let at = match self.scene {
                     Scene::HxMenuSlot => egui::pos2(900.0, 708.0),
                     // Where the sheet's pointer is, over the table's right.
-                    Scene::HxMine => egui::pos2(533.0, 470.0),
+                    Scene::HxMine | Scene::HxMineAccountMenu => egui::pos2(533.0, 470.0),
                     _ => app.menu_anchor.unwrap_or(egui::pos2(400.0, 600.0)),
                 };
                 app.open_row_menu(ui.ctx(), what, at);
@@ -1629,6 +1689,89 @@ fn mine_fixture(app: &mut App) {
     app.lib_showing = crate::LibraryView::Cloud;
     app.pane.cloud_scope = crate::library_pane::CloudScope::Mine;
     app.hearing.arrows = crate::audition::Arrows::Mine;
+}
+
+/// The account as a current TonePush answers for it (sheet 19): the tones of
+/// `mine_fixture` and one published from another computer, all public, and
+/// two setlists, one kept for the account alone. Invented, and held in
+/// memory: nothing is asked of any server.
+fn account_fixture(app: &mut App) {
+    let mut tones: Vec<crate::cloud::ToneDetails> = app
+        .mine
+        .details
+        .values()
+        .filter_map(|answer| answer.as_ref().ok().cloned())
+        .map(|mut tone| {
+            tone.summary.visibility = Some("everyone".to_owned());
+            tone
+        })
+        .collect();
+    let mut arena = crate::cloud::tests::tone_json(9300, 9301, "Arena Lead");
+    arena["name"] = "Arena Lead".into();
+    arena["creator"] = "Noa Calder".into();
+    arena["device"]["name"] = "Helix LT".into();
+    arena["installs_count"] = 1402.into();
+    arena["downloads_count"] = 1402.into();
+    arena["version_number"] = 1.into();
+    arena["versions_count"] = 1.into();
+    arena["visibility"] = "everyone".into();
+    arena["created_at"] = "2026-08-03T12:00:00Z".into();
+    arena["song"]["kind"] = "original".into();
+    arena["song"]["title"] = "Arena Lead".into();
+    arena["versions"] = serde_json::json!([{
+        "number": 1, "current": true, "file_sha256": "a".repeat(64),
+        "created_at": "2026-08-03T12:00:00Z",
+        "download": {"artifact": "/tones/9300/versions/1/artifact"}
+    }]);
+    tones.push(serde_json::from_value(arena).expect("an invented TonePush answer"));
+    let setlist =
+        |id: i64, name: &str, venue: &str, device: &str, slots: u32, seen: &str, day: &str| {
+            serde_json::from_value::<crate::cloud::SetlistSummary>(serde_json::json!({
+                "id": id,
+                "name": name,
+                "venue": venue,
+                "performed_on": null,
+                "visibility": seen,
+                "state": "published",
+                "device": {"id": 1, "name": device, "slug": "device", "family": null},
+                "slot_count": slots,
+                "created_at": day,
+                "updated_at": day,
+            }))
+            .expect("an invented TonePush setlist")
+        };
+    app.account.tones = Some(tones);
+    app.account.setlists = Some(vec![
+        setlist(
+            9400,
+            "Album release show",
+            "Lido Rooftop, Berlin",
+            "HX Stomp",
+            42,
+            "everyone",
+            "2026-10-02T12:00:00Z",
+        ),
+        setlist(
+            9401,
+            "Summer tour",
+            "Various",
+            "StompStation PRO",
+            21,
+            "only_you",
+            "2026-08-02T12:00:00Z",
+        ),
+    ]);
+    app.account.me = serde_json::from_value(serde_json::json!({
+        "id": 7,
+        "name": "Noa Calder",
+        "slug": "noa-calder",
+        "profile_url": "https://tonepush.rocks/creators/noa-calder",
+    }))
+    .ok();
+    app.account.mark_listed(crate::cloud::Capabilities {
+        account: true,
+        setlists: true,
+    });
 }
 
 /// TonePush's public feed for the HX Stomp, as the design's mockups list it:

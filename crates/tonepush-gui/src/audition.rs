@@ -829,6 +829,7 @@ impl App {
             || self.confirm_delete.is_some()
             || self.confirm_setlist_delete.is_some()
             || self.publish_ask.is_some()
+            || self.account.confirm_delete.is_some()
             || self.name_clash.is_some()
             || self.put_question.is_some()
     }

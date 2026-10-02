@@ -359,3 +359,61 @@ each time.
   file.
 - The sheet's "Who can see it" is Everyone here; stage 11 offers Only you when
   the server can hide a tone.
+
+## Stage 11: Mine with the server
+
+Against a TonePush that offers the signed-in API (tonepush-web v0.33.0, live
+at tonepush.rocks), the editor asks once which endpoints it has
+(`cloud::probe`: `GET /api/v1/me` and `GET /api/v1/setlists`, a 404, 405, 501
+or a page that is not JSON meaning "not offered"), again after signing in, and
+lights up what it finds. Without them, everything stays as stage 9 left it and
+the items below are not shown, so an older server or a `TONEPUSH_SITE`
+override never fails on a click.
+
+- **Everything you published** (S1): Mine lists `GET /api/v1/me/tones`, from
+  any computer and in any state, and `GET /api/v1/setlists`, setlists first
+  under their caption (sheet 19): "Noa Calder on TonePush · 9 tones and 2
+  setlists · 7,817 downloads", with **Your page on tonepush.rocks** (S7, from
+  `/me` or the pairing answer) in its head and in the account's menu. A row
+  says who can see it (Everyone, Only you), and a tone published from another
+  computer says "not in this library", with **Keep**.
+- **Who can see it** (S4): **Hide** and **Show** in the details and the menus
+  send `PATCH /api/v1/tones/:id` or `/setlists/:id` with `visibility`; the
+  publish sheet offers **Everyone** and **Only you** (link sharing is not
+  built and is not offered).
+- **Rename** (S2): Rename on TonePush… sends the new name with `PATCH`, with no
+  upload; without S2 it still publishes the file again.
+- **Delete from TonePush…** (S3, sheet 20): asks with what goes (its page and
+  every version, by number), what stays (the downloads people kept, the
+  library's version untouched) and the gentler choice in the footer, then
+  sends `DELETE` and forgets the record. A setlist's delete says its tones
+  stay.
+- **Setlists** (S6): a library setlist's menu offers **Publish on
+  TonePush…**; the sheet names the setlist, its presets and any of them that
+  are not on TonePush in the version the setlist holds, and posts the running
+  order as `slots: [{tone_id, version}]`. A setlist of yours on TonePush has
+  Put on the HX Stomp… (from the library's copy of the same name), Show,
+  Hide and Delete.
+
+Every request runs off the UI thread; a 401 signs the editor out and says so,
+and a refusal is said in TonePush's words. A test build never reaches
+TonePush from the app (`account::REACHES_TONEPUSH`): its configuration could
+be a real one, so tests answer with mocked servers (`cloud::tests::StubServer`)
+and screenshots with invented answers held in memory.
+
+Scenes: `hx-mine-account` (sheet 19, Album release show chosen),
+`hx-mine-account-menu` (sheet 17, "with the server work"), `hx-mine-delete`
+(sheet 20), `hx-publish-account` (the sheet with Only you) and
+`hx-publish-setlist`, at 1280 × 760. Their before is stage 9's `hx-mine` and
+`hx-publish`, drawn again here unchanged against a server without the
+account endpoints.
+
+- Only you is sent with the upload (`tone[visibility]`) and, if TonePush
+  answers that the tone is public, set right after with `PATCH`; until the
+  upload field is confirmed on the server, a tone published for you alone
+  can be public for the moment between the two requests.
+- A setlist on TonePush is matched to the library's by name, newest version,
+  for Put on and Show; the server does not say which local setlist it came
+  from.
+- Mine asks the account again after two minutes when it is shown, and after
+  every change; it does not poll in the background.

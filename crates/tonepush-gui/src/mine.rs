@@ -1,9 +1,11 @@
-//! The Cloud's Mine (docs/design/library-workflow-2026-10-02, 18): what you
-//! published on TonePush. With today's API it lists what this library
-//! published, from the records it keeps when it publishes, with what TonePush
-//! answers for each one: downloads, its versions and the one people get, and
-//! whether the library has moved on since. Tones published before those
-//! records were kept are found once, by name and the exact file hash.
+//! The Cloud's Mine (docs/design/library-workflow-2026-10-02, 18 and 19): what
+//! you published on TonePush. Where the server lists an account's tones and
+//! setlists (`account.rs`), it lists everything you published, from any
+//! computer, with who can see each one. Where it does not, it lists what this
+//! library published, from the records it keeps when it publishes, with what
+//! TonePush answers for each one: downloads, its versions and the one people
+//! get, and whether the library has moved on since. Tones published before
+//! those records were kept are found once, by name and the exact file hash.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc::Receiver;
@@ -47,6 +49,8 @@ pub(crate) struct Mine {
     fetched: Option<Instant>,
     /// The tone chosen, by its id on TonePush.
     pub selected: Option<i64>,
+    /// The setlist chosen instead, by its id on TonePush.
+    pub selected_setlist: Option<i64>,
     /// The rows as the table draws them, for the arrows.
     pub order: Vec<i64>,
     /// Which column orders the rows, and which way.
@@ -65,6 +69,7 @@ impl Default for Mine {
             fetching: None,
             fetched: None,
             selected: None,
+            selected_setlist: None,
             order: Vec::new(),
             sort: (DOWNLOADS, false),
             backfill: None,
@@ -176,8 +181,43 @@ pub(crate) struct Ahead {
 }
 
 impl App {
-    /// Every tone this library published, as rows.
+    /// Every tone you published, as rows: the account's, where the server
+    /// lists them, else this library's.
     pub(crate) fn mine_rows(&self) -> Vec<MineRow> {
+        if let Some(tones) = &self.account.tones {
+            return tones
+                .iter()
+                .map(|tone| {
+                    let id = crate::publish::stable_id(&tone.summary);
+                    let recorded = self
+                        .published
+                        .iter()
+                        .find(|(_, record)| record.tone_id == id);
+                    let series = recorded
+                        .map(|(series, _)| series.clone())
+                        .or_else(|| tone.summary.series_id.clone());
+                    MineRow {
+                        record: recorded.map_or_else(
+                            || library::Published {
+                                tone_id: id,
+                                song_id: tone.summary.song_id,
+                                hash: String::new(),
+                                name: tone.summary.name.clone(),
+                                at: tone.summary.created_at.clone(),
+                            },
+                            |(_, record)| record.clone(),
+                        ),
+                        details: Some(tone.clone()),
+                        problem: None,
+                        local: series.and_then(|series| {
+                            self.lib_entries
+                                .iter()
+                                .position(|entry| entry.series == series)
+                        }),
+                    }
+                })
+                .collect();
+        }
         self.published
             .iter()
             .map(|(series, record)| {
@@ -195,9 +235,27 @@ impl App {
             .collect()
     }
 
-    /// How many tones this library published, for the Cloud's Mine.
+    /// How many things you published, for the Cloud's Mine.
     pub(crate) fn mine_count(&self) -> usize {
-        self.published.len()
+        match &self.account.tones {
+            Some(tones) => tones.len() + self.account.setlists.as_ref().map_or(0, Vec::len),
+            None => self.published.len(),
+        }
+    }
+
+    /// Your setlists on TonePush, where the server keeps them.
+    pub(crate) fn mine_setlists(&self) -> Vec<cloud::SetlistSummary> {
+        self.account.setlists.clone().unwrap_or_default()
+    }
+
+    /// The library's setlist of the same name, the newest version.
+    pub(crate) fn local_setlist_named(&self, name: &str) -> Option<usize> {
+        self.lib_setlists
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, setlist))| setlist.name.eq_ignore_ascii_case(name))
+            .max_by_key(|(_, (_, setlist))| setlist.revision())
+            .map(|(index, _)| index)
     }
 
     /// The library's revision of a published tone when TonePush does not
@@ -234,7 +292,10 @@ impl App {
 
     /// Ask TonePush for each published tone again, when its answers are old.
     pub(crate) fn refresh_mine(&mut self, ctx: &egui::Context, now: bool) {
-        if self.mine.fetching.is_some() || self.published.is_empty() {
+        if !crate::account::REACHES_TONEPUSH
+            || self.mine.fetching.is_some()
+            || self.published.is_empty()
+        {
             return;
         }
         if !now
@@ -326,7 +387,8 @@ impl App {
     /// TonePush has their files, so its feed is searched by name, and only
     /// the exact file, by this account when it is known, is taken.
     pub(crate) fn backfill_mine(&mut self, ctx: &egui::Context) {
-        if self.mine.backfilled || self.mine.backfill.is_some() {
+        if !crate::account::REACHES_TONEPUSH || self.mine.backfilled || self.mine.backfill.is_some()
+        {
             return;
         }
         let Some(files) = self.cloud_files.clone() else {
@@ -369,13 +431,21 @@ impl App {
     pub(crate) fn mine_view(&mut self, root: &mut Ui, tier: Tier) {
         let ctx = root.ctx().clone();
         self.settle_mine();
-        self.refresh_mine(&ctx, false);
-        self.backfill_mine(&ctx);
+        self.list_account(&ctx, false);
+        let account = self.account.tones.is_some();
+        if !account {
+            self.refresh_mine(&ctx, false);
+            self.backfill_mine(&ctx);
+        }
         let rows = self.mine_rows();
-        if rows.is_empty() {
+        let setlists = self.mine_setlists();
+        if rows.is_empty() && setlists.is_empty() {
             let rect = root.max_rect();
-            let words = if self.mine.backfill.is_some() {
-                "Looking on TonePush for tones published from this library…"
+            let words = if self.mine.backfill.is_some() || self.account.busy() {
+                "Looking on TonePush for what you published…"
+            } else if account {
+                "Nothing published from this account yet. Tones and setlists you publish \
+                 appear here, with who can see them and their downloads."
             } else if self.config.token.is_some() {
                 "Tones you publish from this library appear here, with their downloads and \
                  versions."
@@ -398,6 +468,13 @@ impl App {
             .is_none_or(|id| !rows.iter().any(|row| row.record.tone_id == id))
         {
             self.mine.selected = None;
+        }
+        if self
+            .mine
+            .selected_setlist
+            .is_none_or(|id| !setlists.iter().any(|setlist| setlist.id == id))
+        {
+            self.mine.selected_setlist = None;
         }
         if tier != Tier::S {
             egui::Panel::right("mine-inspector")
@@ -426,7 +503,14 @@ impl App {
                                 })
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
-                                    self.mine_inspector(ui, &rows);
+                                    match self.mine.selected_setlist.and_then(|id| {
+                                        setlists.iter().find(|setlist| setlist.id == id)
+                                    }) {
+                                        Some(setlist) => {
+                                            self.mine_setlist_inspector(ui, &setlist.clone());
+                                        }
+                                        None => self.mine_inspector(ui, &rows),
+                                    }
                                 });
                         });
                     ui.advance_cursor_after_rect(rect);
@@ -435,14 +519,18 @@ impl App {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::bg()))
             .show(root, |ui| {
-                self.mine_head(ui, &rows);
-                self.mine_table(ui, &rows, tier);
+                self.mine_head(ui, &rows, &setlists);
+                if account {
+                    self.mine_account_table(ui, &rows, &setlists, tier);
+                } else {
+                    self.mine_table(ui, &rows, tier);
+                }
             });
     }
 
     /// The line over the table: how many, and how often downloaded; who is
     /// signed in.
-    fn mine_head(&mut self, ui: &mut Ui, rows: &[MineRow]) {
+    fn mine_head(&mut self, ui: &mut Ui, rows: &[MineRow], setlists: &[cloud::SetlistSummary]) {
         let width = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 36.0), egui::Sense::hover());
         ui.painter().hline(
@@ -452,23 +540,43 @@ impl App {
         );
         let downloads: u64 = rows.iter().map(MineRow::downloads).sum();
         let count = rows.len();
-        let job = crate::library_view::where_job(
-            &[
-                (
-                    &format!("{count} {}", if count == 1 { "tone" } else { "tones" }),
-                    Words::Bold,
-                ),
+        let tones = format!("{count} {}", if count == 1 { "tone" } else { "tones" });
+        let downloads = format!(" · {} downloads", crate::format_count(downloads));
+        let account = self.account.tones.is_some();
+        let name = self
+            .account
+            .me
+            .as_ref()
+            .and_then(|me| me.name.clone())
+            .or_else(|| self.config.account.clone())
+            .unwrap_or_else(|| "You".to_owned());
+        let lists = match setlists.len() {
+            0 => tones.clone(),
+            1 => format!("{tones} and 1 setlist"),
+            several => format!("{tones} and {several} setlists"),
+        };
+        let parts: Vec<(&str, Words)> = if account {
+            vec![
+                (name.as_str(), Words::Bold),
+                (" on TonePush · ", Words::Soft),
+                (lists.as_str(), Words::Soft),
+                (downloads.as_str(), Words::Soft),
+            ]
+        } else {
+            vec![
+                (tones.as_str(), Words::Bold),
                 (" published from this library", Words::Soft),
-                (
-                    &format!(" · {} downloads", crate::format_count(downloads)),
-                    Words::Soft,
-                ),
-            ],
-            width - 260.0,
-        );
+                (downloads.as_str(), Words::Soft),
+            ]
+        };
+        let job = crate::library_view::where_job(&parts, width - 260.0);
         theme::paint_icon(
             ui,
-            Icon::CloudUpload,
+            if account {
+                Icon::User
+            } else {
+                Icon::CloudUpload
+            },
             Pos2::new(rect.left() + 24.0, rect.center().y),
             14.0,
             theme::muted(),
@@ -480,7 +588,26 @@ impl App {
                 .max_rect(rect.shrink2(Vec2::new(16.0, 0.0)))
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
         );
+        let page = self
+            .account
+            .me
+            .as_ref()
+            .and_then(|me| me.profile_url.clone())
+            .or_else(|| self.config.profile_url.clone());
         match self.config.account.clone() {
+            Some(_) if account && page.is_some() => {
+                if theme::Button::new("Your page on tonepush.rocks")
+                    .ghost()
+                    .small()
+                    .icon(Icon::ExternalLink)
+                    .show(&mut child)
+                    .clicked()
+                {
+                    if let Some(page) = page {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(page));
+                    }
+                }
+            }
             Some(account) if self.config.token.is_some() => {
                 theme::label(
                     &mut child,
@@ -501,9 +628,12 @@ impl App {
                 }
             }
         }
-        if self.mine.fetching.is_some() {
+        if self.mine.fetching.is_some() || self.account.busy() {
             let (spot, _) = child.allocate_exact_size(Vec2::splat(16.0), egui::Sense::hover());
             crate::shell::spin(&child, spot.center(), 5.0);
+        }
+        if let Some(problem) = self.account.problem.clone() {
+            theme::label(&mut child, &problem, theme::regular(12.5), theme::danger());
         }
     }
 
@@ -807,7 +937,14 @@ impl App {
                     "Original".to_owned()
                 });
             }
-            theme::label(ui, &words.join(" · "), theme::regular(12.5), theme::muted());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(words.join(" · "))
+                        .font(theme::regular(12.5))
+                        .color(theme::muted()),
+                )
+                .truncate(),
+            );
         });
         ui.add_space(12.0);
         crate::library_view::rule(ui);
@@ -867,28 +1004,54 @@ impl App {
             &[(&downloads, Words::Soft), (&when, Words::Soft)],
             None,
         );
-        // Who sees it.
-        match &row.problem {
-            Some(problem) => {
-                where_row(
-                    ui,
-                    Icon::CircleAlert,
-                    theme::muted(),
-                    &[(&capital(problem), Words::Soft)],
-                    None,
-                );
-            }
-            None => {
-                let open = where_row(
-                    ui,
+        // Who sees it, and changing that, where the server can.
+        if let Some(visibility) = self.tone_visibility(row.record.tone_id) {
+            let (icon, words, action, other) = match visibility {
+                cloud::Visibility::Everyone => (
                     Icon::Globe,
-                    theme::text_soft(),
-                    &[("Public on tonepush.rocks", Words::Soft)],
-                    row.details.as_ref().and(Some("Open")),
-                );
-                if open {
-                    if let Some(url) = self.mine_url(&row) {
-                        ctx.open_url(egui::OpenUrl::new_tab(url));
+                    "Everyone can see it",
+                    "Hide",
+                    cloud::Visibility::OnlyYou,
+                ),
+                cloud::Visibility::OnlyYou => (
+                    Icon::EyeOff,
+                    "Only you can see it",
+                    "Show",
+                    cloud::Visibility::Everyone,
+                ),
+            };
+            if where_row(
+                ui,
+                icon,
+                theme::text_soft(),
+                &[(words, Words::Soft)],
+                Some(action),
+            ) {
+                self.set_tone_visibility(row.record.tone_id, other, &ctx);
+            }
+        } else {
+            match &row.problem {
+                Some(problem) => {
+                    where_row(
+                        ui,
+                        Icon::CircleAlert,
+                        theme::muted(),
+                        &[(&capital(problem), Words::Soft)],
+                        None,
+                    );
+                }
+                None => {
+                    let open = where_row(
+                        ui,
+                        Icon::Globe,
+                        theme::text_soft(),
+                        &[("Public on tonepush.rocks", Words::Soft)],
+                        row.details.as_ref().and(Some("Open")),
+                    );
+                    if open {
+                        if let Some(url) = self.mine_url(&row) {
+                            ctx.open_url(egui::OpenUrl::new_tab(url));
+                        }
                     }
                 }
             }
@@ -922,6 +1085,33 @@ impl App {
                     );
                 }
             }
+        }
+
+        if self.account.lists_tones() {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if let Some(url) = self.mine_url(&row) {
+                    if theme::Button::new("Open")
+                        .small()
+                        .icon(Icon::ExternalLink)
+                        .show(ui)
+                        .clicked()
+                    {
+                        ctx.open_url(egui::OpenUrl::new_tab(url));
+                    }
+                }
+                if theme::Button::new("Delete…")
+                    .ghost()
+                    .small()
+                    .icon(Icon::Remove)
+                    .show(ui)
+                    .clicked()
+                {
+                    self.account.confirm_delete =
+                        Some(crate::account::Yours::Tone(row.record.tone_id));
+                }
+            });
         }
 
         // Its versions on TonePush, a click on one playing it.
@@ -967,6 +1157,423 @@ impl App {
             };
             self.start_cloud_entry_action(entry, CloudAction::Audition, &ctx);
         }
+    }
+
+    /// The table of everything you published, setlists first, each group
+    /// under its caption (sheet 19).
+    fn mine_account_table(
+        &mut self,
+        ui: &mut Ui,
+        rows: &[MineRow],
+        setlists: &[cloud::SetlistSummary],
+        tier: Tier,
+    ) {
+        let columns = vec![
+            table::Column::new("", 44.0),
+            table::Column::new("Pedal", tier.pick(44.0, 88.0, 100.0)),
+            table::Column::new("Name", 170.0),
+            table::Column::new("On TonePush", 150.0).fills(),
+            table::Column::new("Who sees it", 110.0),
+            table::Column::new("Downloads", 80.0),
+            table::Column::new("Published", 70.0),
+        ];
+        let mut grid = table::Grid {
+            columns,
+            sort: (ACCOUNT_DOWNLOADS, false),
+            sticky: 3,
+            row_height: crate::library_pane::TABLE_ROW,
+            header_height: crate::library_pane::TABLE_HEADER,
+            nothing_yet: "Nothing published yet.",
+            click_plays: true,
+            ..Default::default()
+        };
+        // Downloads, most first, in each group.
+        let mut tones: Vec<&MineRow> = rows.iter().collect();
+        tones.sort_by_key(|row| std::cmp::Reverse(row.downloads()));
+        let mut items = Vec::new();
+        if !setlists.is_empty() {
+            items.push(Item::Caption(format!("Setlists  {}", setlists.len())));
+            items.extend(setlists.iter().map(Item::Setlist));
+            items.push(Item::Caption(format!("Tones  {}", tones.len())));
+        }
+        items.extend(tones.iter().map(|row| Item::Tone(row)));
+        for item in &items {
+            grid.rows.push(match item {
+                Item::Caption(words) => vec![
+                    table::Cell::Group(words.clone()),
+                    table::Cell::Text(String::new()),
+                    table::Cell::Text(String::new()),
+                    table::Cell::Text(String::new()),
+                    table::Cell::Text(String::new()),
+                    table::Cell::Text(String::new()),
+                    table::Cell::Text(String::new()),
+                ],
+                Item::Setlist(setlist) => self.mine_setlist_cells(setlist, tier),
+                Item::Tone(row) => self.mine_account_cells(row, tier),
+            });
+            grid.chosen.push(false);
+        }
+        grid.selected = items.iter().position(|item| match item {
+            Item::Setlist(setlist) => self.mine.selected_setlist == Some(setlist.id),
+            Item::Tone(row) => {
+                self.mine.selected_setlist.is_none()
+                    && self.mine.selected == Some(row.record.tone_id)
+            }
+            Item::Caption(_) => false,
+        });
+        let loading = self.heard_loading();
+        grid.playing = items
+            .iter()
+            .position(|item| match item {
+                Item::Tone(row) => row.details.as_ref().is_some_and(|tone| {
+                    self.hears(&crate::audition::Source::TonePush(tone.summary.id))
+                }),
+                _ => false,
+            })
+            .map(|row| (row, loading));
+        self.mine.order = tones.iter().map(|row| row.record.tone_id).collect();
+        if std::mem::take(&mut self.mine.reveal) {
+            grid.reveal = grid.selected;
+            grid.reveal_near = true;
+        }
+
+        let did = table::show(ui, "mine-account", &mut grid);
+        self.menu_anchor = did
+            .selected_rect
+            .map(|rect| rect.left_bottom() + egui::vec2(36.0, 2.0));
+        let ctx = ui.ctx().clone();
+        let pointer = ctx
+            .input(|input| input.pointer.interact_pos())
+            .unwrap_or_default();
+        if let Some((row, ..)) = did.clicked {
+            match items.get(row) {
+                Some(Item::Tone(row)) => {
+                    self.mine.selected = Some(row.record.tone_id);
+                    self.mine.selected_setlist = None;
+                    self.hearing.arrows = Arrows::Mine;
+                    self.mine_play(row.record.tone_id, &ctx);
+                }
+                Some(Item::Setlist(setlist)) => {
+                    self.mine.selected_setlist = Some(setlist.id);
+                    self.hearing.arrows = Arrows::Mine;
+                }
+                _ => {}
+            }
+        }
+        if let Some(row) = did.context {
+            match items.get(row) {
+                Some(Item::Tone(row)) => {
+                    self.mine.selected = Some(row.record.tone_id);
+                    self.mine.selected_setlist = None;
+                    self.hearing.arrows = Arrows::Mine;
+                    self.open_row_menu(
+                        &ctx,
+                        crate::menus::MenuFor::Mine(row.record.tone_id),
+                        pointer,
+                    );
+                }
+                Some(Item::Setlist(setlist)) => {
+                    self.mine.selected_setlist = Some(setlist.id);
+                    self.hearing.arrows = Arrows::Mine;
+                    self.open_row_menu(
+                        &ctx,
+                        crate::menus::MenuFor::MineSetlist(setlist.id),
+                        pointer,
+                    );
+                }
+                _ => {}
+            }
+        }
+        if let Some((row, place)) = did.place {
+            if let Some(Item::Tone(row)) = items.get(row) {
+                self.mine.selected = Some(row.record.tone_id);
+                self.mine.selected_setlist = None;
+                self.hearing.arrows = Arrows::Mine;
+                match place {
+                    0 => self.mine_play(row.record.tone_id, &ctx),
+                    _ => self.mine_show_or_keep(row.record.tone_id, &ctx),
+                }
+            }
+        }
+    }
+
+    /// One of your tones as a row of the account's table.
+    fn mine_account_cells(&self, row: &MineRow, tier: Tier) -> Vec<table::Cell> {
+        let device = self.device.trim().to_owned();
+        let discovered = row.discovered();
+        let local = row.local.map(|index| &self.lib_entries[index]);
+        let found_marker = discovered
+            .as_ref()
+            .and_then(Self::cloud_marker)
+            .or_else(|| local.and_then(|entry| entry.marker.clone()));
+        let plays = discovered
+            .as_ref()
+            .is_none_or(|tone| self.cloud_audition_blocker(tone).is_none());
+        let places = vec![
+            (
+                if plays { Icon::Pedal } else { Icon::Ban },
+                theme::Sync::Absent,
+                if plays {
+                    format!("Play it on the {device}")
+                } else {
+                    "The pedal connected cannot play it".to_owned()
+                },
+                plays,
+            ),
+            (
+                Icon::Computer,
+                if local.is_some() {
+                    theme::Sync::Same
+                } else {
+                    theme::Sync::Absent
+                },
+                if local.is_some() {
+                    "In your library".to_owned()
+                } else {
+                    "Not in this library: keep it".to_owned()
+                },
+                true,
+            ),
+        ];
+        let on_tonepush = match row.versions() {
+            Some((current, _)) => match self.mine_ahead(row) {
+                Some(ahead) => {
+                    table::Cell::Hot(format!("v{current} · library has v{}", ahead.version))
+                }
+                None if local.is_none() => {
+                    table::Cell::Dim(format!("v{current} · not in this library"))
+                }
+                None => table::Cell::Text(format!("v{current}")),
+            },
+            None => table::Cell::Dim(String::new()),
+        };
+        let visibility = self.tone_visibility(row.record.tone_id);
+        let published = row.published_at();
+        vec![
+            table::Cell::Places(places),
+            marker_cell(found_marker.as_ref(), plays, tier),
+            table::Cell::Name {
+                text: row.name(),
+                tag: None,
+            },
+            on_tonepush,
+            who_sees(visibility),
+            table::Cell::Value {
+                text: crate::format_count(row.downloads()),
+                key: format!("{:012}", row.downloads()),
+                dim: false,
+            },
+            table::Cell::Value {
+                text: crate::day_month(&published),
+                key: published,
+                dim: false,
+            },
+        ]
+    }
+
+    /// One of your setlists as a row of the account's table.
+    fn mine_setlist_cells(&self, setlist: &cloud::SetlistSummary, tier: Tier) -> Vec<table::Cell> {
+        let found_marker = crate::devices::Marker::of_device(&setlist.device.name, "");
+        let local = self.local_setlist_named(&setlist.name);
+        let places = vec![
+            (
+                Icon::ListMusic,
+                theme::Sync::Unknown,
+                "A setlist".to_owned(),
+                false,
+            ),
+            (
+                Icon::Computer,
+                if local.is_some() {
+                    theme::Sync::Same
+                } else {
+                    theme::Sync::Absent
+                },
+                if local.is_some() {
+                    "In your library".to_owned()
+                } else {
+                    "Not in this library".to_owned()
+                },
+                false,
+            ),
+        ];
+        let presets = format!("{} presets", setlist.slot_count);
+        let on_tonepush = match local {
+            Some(index) => format!("v{} · {presets}", self.lib_setlists[index].1.revision()),
+            None => presets,
+        };
+        let visibility = match setlist.visibility.as_str() {
+            "only_you" => cloud::Visibility::OnlyYou,
+            _ => cloud::Visibility::Everyone,
+        };
+        vec![
+            table::Cell::Places(places),
+            marker_cell(found_marker.as_ref(), true, tier),
+            table::Cell::Name {
+                text: setlist.name.clone(),
+                tag: None,
+            },
+            table::Cell::Dim(on_tonepush),
+            who_sees(Some(visibility)),
+            table::Cell::Dim(String::new()),
+            table::Cell::Value {
+                text: crate::day_month(&setlist.created_at),
+                key: setlist.created_at.clone(),
+                dim: false,
+            },
+        ]
+    }
+
+    /// One of your setlists' details: who can see it, the library's copy,
+    /// and putting it on the pedal.
+    fn mine_setlist_inspector(&mut self, ui: &mut Ui, setlist: &cloud::SetlistSummary) {
+        let ctx = ui.ctx().clone();
+        theme::label(ui, &setlist.name, theme::semibold(17.0), theme::text());
+        ui.add_space(4.0);
+        let found_marker = crate::devices::Marker::of_device(&setlist.device.name, "");
+        let local = self.local_setlist_named(&setlist.name);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            marker(ui, found_marker.as_ref(), true);
+            let mut words = Vec::new();
+            if let Some(index) = local {
+                words.push(format!("v{}", self.lib_setlists[index].1.revision()));
+            }
+            words.push(format!("{} presets", setlist.slot_count));
+            if let Some(venue) = setlist.venue.as_deref().filter(|venue| !venue.is_empty()) {
+                words.push(venue.to_owned());
+            }
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(words.join(" · "))
+                        .font(theme::regular(12.5))
+                        .color(theme::muted()),
+                )
+                .truncate(),
+            );
+        });
+        ui.add_space(12.0);
+        crate::library_view::rule(ui);
+        ui.add_space(6.0);
+        let (icon, words, action, other) = match setlist.visibility.as_str() {
+            "only_you" => (
+                Icon::EyeOff,
+                "Only you can see it",
+                "Show",
+                cloud::Visibility::Everyone,
+            ),
+            _ => (
+                Icon::Globe,
+                "Everyone can see it",
+                "Hide",
+                cloud::Visibility::OnlyYou,
+            ),
+        };
+        if where_row(
+            ui,
+            icon,
+            theme::text_soft(),
+            &[(words, Words::Soft)],
+            Some(action),
+        ) {
+            self.set_setlist_visibility(setlist.id, other, &ctx);
+        }
+        let when = format!("Published {}", crate::day_month(&setlist.created_at));
+        where_row(
+            ui,
+            Icon::CloudUpload,
+            theme::text_soft(),
+            &[(&when, Words::Soft)],
+            None,
+        );
+        match local {
+            Some(index) => {
+                let version = format!("v{}", self.lib_setlists[index].1.revision());
+                if where_row(
+                    ui,
+                    Icon::Computer,
+                    theme::text_soft(),
+                    &[
+                        ("In your library as ", Words::Soft),
+                        (&version, Words::Bold),
+                    ],
+                    Some("Show"),
+                ) {
+                    let tier = Tier::now(&ctx);
+                    self.open_library(crate::LibraryView::Setlists, tier);
+                    self.select_setlist_entry(index);
+                }
+                if let Some(states) = self.setlist_states(&self.lib_setlists[index].1.clone()) {
+                    let differing = states.iter().filter(|state| state.differs()).count();
+                    let device = self.device.trim().to_owned();
+                    let words = match differing {
+                        0 => format!("Matches the {device}"),
+                        1 => format!("1 slot differs from the {device}"),
+                        n => format!("{n} slots differ from the {device}"),
+                    };
+                    where_row(
+                        ui,
+                        Icon::Pedal,
+                        if differing > 0 {
+                            theme::hot()
+                        } else {
+                            theme::text_soft()
+                        },
+                        &[(&words, Words::Soft)],
+                        None,
+                    );
+                }
+            }
+            None => {
+                where_row(
+                    ui,
+                    Icon::Computer,
+                    theme::muted(),
+                    &[("Not in this library", Words::Soft)],
+                    None,
+                );
+            }
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let device = self.device.trim().to_owned();
+            if let Some(index) = local {
+                if theme::Button::new(&format!("Put on {device}…"))
+                    .small()
+                    .icon(Icon::Download)
+                    .enabled(self.pedal_online())
+                    .show(ui)
+                    .clicked()
+                {
+                    self.select_setlist_entry(index);
+                    self.confirm_push = Some(index);
+                }
+            }
+            if theme::Button::new("Delete…")
+                .ghost()
+                .small()
+                .icon(Icon::Remove)
+                .show(ui)
+                .clicked()
+            {
+                self.account.confirm_delete = Some(crate::account::Yours::Setlist(setlist.id));
+            }
+        });
+        ui.add_space(10.0);
+        section(ui, "Its tones");
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!(
+                    "{} presets, each a tone you published, in the order the setlist \
+                     plays them.",
+                    setlist.slot_count
+                ))
+                .font(theme::regular(theme::SECONDARY))
+                .color(theme::text_soft()),
+            )
+            .wrap(),
+        );
     }
 
     /// The tone's page on TonePush.
@@ -1047,6 +1654,45 @@ pub(crate) fn find_published(
         }
     }
     found
+}
+
+/// What the account's table holds, in order.
+enum Item<'a> {
+    Caption(String),
+    Setlist(&'a cloud::SetlistSummary),
+    Tone(&'a MineRow),
+}
+
+/// The Downloads column of the account's table.
+const ACCOUNT_DOWNLOADS: usize = 5;
+
+/// A tone's or setlist's marker as a table cell.
+fn marker_cell(found: Option<&crate::devices::Marker>, plays: bool, tier: Tier) -> table::Cell {
+    match found {
+        Some(found) => table::Cell::Marker {
+            family: found.family.label(),
+            model: found.model.clone(),
+            solid: plays,
+            compact: tier == Tier::S,
+            hover: format!("For {}", found.with_article()),
+        },
+        None => table::Cell::Text(String::new()),
+    }
+}
+
+/// Who can see something on TonePush, as a table cell.
+fn who_sees(visibility: Option<cloud::Visibility>) -> table::Cell {
+    match visibility {
+        Some(cloud::Visibility::OnlyYou) => table::Cell::Seen {
+            icon: Icon::EyeOff,
+            text: "Only you".to_owned(),
+        },
+        Some(cloud::Visibility::Everyone) => table::Cell::Seen {
+            icon: Icon::Globe,
+            text: "Everyone".to_owned(),
+        },
+        None => table::Cell::Dim(String::new()),
+    }
 }
 
 /// "not on TonePush any more" as a sentence on its own: "Not on TonePush any

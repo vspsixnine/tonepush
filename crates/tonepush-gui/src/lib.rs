@@ -10,6 +10,7 @@ use hx_catalog::{Catalog, Kind};
 
 /// Public so the desktop entry point can bring an older library across before
 /// the first window opens. Nothing else here needs to be.
+mod account;
 mod audition;
 mod backups;
 mod board;
@@ -562,10 +563,14 @@ pub struct App {
     publish_queue: std::collections::VecDeque<publish::Queued>,
     /// The publish sheet's question, while it is asked.
     publish_ask: Option<publish::Asked>,
+    /// Who the sheet would publish for: everyone, or you alone.
+    publish_visibility: cloud::Visibility,
     /// What this library published to TonePush, by each tone's series.
     published: std::collections::BTreeMap<String, library::Published>,
     /// The Cloud's Mine.
     mine: mine::Mine,
+    /// Your account on TonePush, where the server can say more.
+    account: account::Account,
     /// Where the board was drawn, for drops on it.
     board_rect: Option<egui::Rect>,
     /// Where the preset list was drawn, for a setlist dropped on it.
@@ -1493,8 +1498,10 @@ impl App {
             confirm_setlist_delete: None,
             publish_queue: std::collections::VecDeque::new(),
             publish_ask: None,
+            publish_visibility: cloud::Visibility::Everyone,
             published: std::collections::BTreeMap::new(),
             mine: mine::Mine::default(),
+            account: account::Account::default(),
             board_rect: None,
             presets_rect: None,
             row_rects: std::collections::BTreeMap::new(),
@@ -2117,6 +2124,10 @@ impl App {
         if !self.mine.asked() {
             self.refresh_mine(&ctx, true);
         }
+        // Which of the account's endpoints the server offers, asked once and
+        // again after signing in; menus leave out what it cannot do.
+        self.settle_account();
+        self.probe_account(&ctx);
         self.settle_cloud_search(&ctx);
         self.settle_cloud_download(&ctx);
         // A tone file dropped on the Tones tab or a preset goes there; any
@@ -2184,6 +2195,7 @@ impl App {
         self.confirm_delete_window(&ctx);
         self.confirm_setlist_delete_window(&ctx);
         self.publish_window(&ctx);
+        self.confirm_tonepush_delete_window(&ctx);
         self.name_clash_window(&ctx);
         self.save_setlist_window(&ctx);
         self.confirm_switch_window(&ctx);
@@ -5343,6 +5355,7 @@ impl App {
                     output_target,
                     chain_content,
                     character,
+                    visibility: None,
                     blocks,
                     parsed_metadata,
                     preset: Some(cloud::PresetUpload {
