@@ -401,6 +401,12 @@ Fixes after the stages that change what the window shows, each before (in
   its tempo node, and the reading stays where the pedal has it. Before, the
   tempo was dropped without a word, so its `before/` is the editor as it was
   left (`pro-edit`); a tempo the pedal took was shown before it answered.
+- `pro-read-only` (new): a StompStation PRO on firmware 2.2.6, which
+  TonePush has not verified for saving. A block's controls turn, as its
+  chain changes: both change only the live preset, which the pedal takes on
+  any firmware. Before, the pane greyed them out on such firmware although
+  the pedal took the same edits from the tempo and the command line. The
+  input's settings are the pedal's own, and still wait.
 
 ## StompStation PRO routing on firmware 2.x
 

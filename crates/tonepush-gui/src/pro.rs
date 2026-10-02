@@ -4209,6 +4209,22 @@ pub(crate) mod demo {
             }
         }
 
+        /// The pedal on firmware 2.2.6, which TonePush has not verified for
+        /// saving: presets, knobs and the chain still change, live.
+        pub(crate) fn demo_read_only(&mut self) {
+            if let Some(snapshot) = self.snapshot.as_mut() {
+                snapshot.identity.version = "2.2.6".into();
+            }
+            self.rollback = None;
+            self.rollback_time = None;
+            self.facts = LibraryFacts::default();
+            self.read_only = Some(
+                "connected identity is StompStation PRO / firmware 2.2.6 / CM4 / sspro; writes \
+                 are verified only for StompStation PRO / firmware 1.5.12 or 2.0.10 / CM4 / sspro"
+                    .into(),
+            );
+        }
+
         /// Which slots hold what the library holds, as a backup would say.
         pub(crate) fn demo_library_marks(&mut self, hashes: BTreeMap<usize, String>) {
             self.preset_hashes = hashes;

@@ -259,6 +259,16 @@ impl Panel {
         face
     }
 
+    /// Whether the pane's controls answer. A block's change only the live
+    /// preset, so they do whenever the pedal is online and quiet, on
+    /// firmware not verified for saving too; the input's are the pedal's own
+    /// settings, so they wait for a checked backup and verified firmware.
+    fn face_enabled(&self, persistent: bool) -> bool {
+        self.online
+            && !self.busy
+            && (!persistent || (self.rollback.is_some() && self.read_only.is_none()))
+    }
+
     /// Send one edit, kept in the drafts at once.
     fn send_edit(&mut self, asked: Asked, persistent: bool) {
         if asked.description.validate_value(&asked.value).is_err() {
@@ -483,7 +493,7 @@ impl Panel {
             });
             ui.add_space(8.0);
         }
-        let enabled = self.online && !self.busy && guarded && self.read_only.is_none();
+        let enabled = self.face_enabled(persistent);
         ui.horizontal_top(|ui| {
             ui.add_space(20.0);
             let width = ui.available_width() - 16.0;
@@ -1474,6 +1484,25 @@ mod tests {
             "type": "float", "desc": "Time", "value": min, "min": min, "max": max, "step": step,
         }))
         .unwrap()
+    }
+
+    /// On firmware not verified for saving a block's controls still turn,
+    /// as its chain still changes: both only change the live preset. The
+    /// input's settings are the pedal's own, and wait.
+    #[test]
+    fn a_blocks_controls_turn_on_firmware_not_verified_for_saving() {
+        let mut panel = Panel::new(egui::Context::default());
+        panel.show_demo();
+        assert!(panel.face_enabled(false) && panel.face_enabled(true));
+        panel.read_only = Some("firmware 2.2.6 is not verified".to_owned());
+        assert!(panel.face_enabled(false), "a block's knobs");
+        assert!(!panel.face_enabled(true), "the input's settings");
+        panel.read_only = None;
+        panel.rollback = None;
+        assert!(panel.face_enabled(false));
+        assert!(!panel.face_enabled(true), "settings wait for a backup");
+        panel.busy = true;
+        assert!(!panel.face_enabled(false));
     }
 
     /// On 2.x a block's head says where it is in the chain and what it runs

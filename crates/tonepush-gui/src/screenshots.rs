@@ -100,10 +100,12 @@ enum Scene {
     ProRouterThreeWay,
     /// Firmware 2.0.10, a free position chosen to put a block in.
     ProRouterPicker,
+    /// Firmware 2.2.6, not verified for saving: edits are live only.
+    ProReadOnly,
 }
 
 impl Scene {
-    const ALL: [Scene; 31] = [
+    const ALL: [Scene; 32] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -135,6 +137,7 @@ impl Scene {
         Scene::ProRouterParallel,
         Scene::ProRouterThreeWay,
         Scene::ProRouterPicker,
+        Scene::ProReadOnly,
     ];
 
     fn name(self) -> &'static str {
@@ -170,6 +173,7 @@ impl Scene {
             Scene::ProRouterParallel => "pro-router-parallel",
             Scene::ProRouterThreeWay => "pro-router-three-way",
             Scene::ProRouterPicker => "pro-router-picker",
+            Scene::ProReadOnly => "pro-read-only",
         }
     }
 
@@ -244,6 +248,12 @@ impl Scene {
                     Scene::ProRouterPicker => DemoChain::Picking,
                     _ => DemoChain::Default,
                 });
+            }
+            Scene::ProReadOnly => {
+                use crate::pro::demo::DemoChain;
+                pro(app);
+                app.pro.show_demo_router(DemoChain::Parallel);
+                app.pro.demo_read_only();
             }
             Scene::ProUnprotected => {
                 pro(app);
