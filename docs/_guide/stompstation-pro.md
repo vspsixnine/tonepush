@@ -174,6 +174,12 @@ tonepush pro backup stompstation.vxbundle
 tonepush pro verify-backup stompstation.vxbundle
 ```
 
+On firmware 2.x, `tonepush pro schema 'root\app\router'` shows the chain as
+one row of positions and connectors, and `tonepush pro set 'root\app\router'`
+with such a row writes the whole chain, saying so when the pedal reads back
+something else: it keeps fixed blocks in place and a block written twice in
+its later position.
+
 Persistent CLI operations require both the matching rollback and an explicit
 `--yes`:
 

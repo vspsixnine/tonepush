@@ -804,3 +804,31 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)?;
     file.commit()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `pro set` takes a 2.x chain as the JSON row the schema shows, and
+    /// refuses one the pedal would ignore before sending it.
+    #[test]
+    fn a_chain_is_set_as_one_row_as_long_as_the_pedals() {
+        let router: NodeDescription = serde_json::from_value(serde_json::json!({
+            "type": "router", "desc": "router",
+            "value": [["root\\app\\gate", "s", "root\\app\\amp", "s", ""]],
+        }))
+        .unwrap();
+        let row = r#"[["root\\app\\amp","p","root\\app\\gate","s",""]]"#;
+        assert_eq!(
+            parse_node_value(&router, row).unwrap(),
+            serde_json::from_str::<serde_json::Value>(row).unwrap()
+        );
+        for refused in [
+            r#"[["root\\app\\amp"]]"#,
+            r#"["root\\app\\amp","p","",""]"#,
+            "root\\app\\amp",
+        ] {
+            assert!(parse_node_value(&router, refused).is_err(), "{refused}");
+        }
+    }
+}
