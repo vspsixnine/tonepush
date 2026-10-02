@@ -10,9 +10,11 @@ pub mod command;
 pub mod frame;
 pub mod node;
 pub mod preset;
+pub mod router;
 pub mod update;
 
 pub use command::{Command, CommandError, NodePath};
 pub use frame::{DecodeError, Decoder, Frame, Record};
 pub use node::{NodeDescription, NodeKind, NodeTree, NodeValueError};
 pub use preset::{Preset, PresetError};
+pub use router::{Fixed, Link, Router, RouterNode};

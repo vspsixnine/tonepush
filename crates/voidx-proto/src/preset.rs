@@ -162,6 +162,40 @@ mod tests {
         );
     }
 
+    /// Firmware 2.x saves the chain as a preset's first record. Export and
+    /// import keep it byte for byte, in its place, and it still reads as the
+    /// chain afterwards.
+    #[test]
+    fn a_saved_chain_survives_export_and_import() {
+        let stored = b"root\\app\\router:{\"value\":[[\"root\\\\app\\\\gate\",\"s\",\"\",\"p\",\"root\\\\app\\\\delay\",\"p\",\"root\\\\app\\\\reverb\",\"s\",\"\"]]}\r\n\
+root\\app\\gate\\on_off:{\"value\":\"ON\"}\r\n\
+root\\app\\delay\\mix:{\"value\":28.000000}\r\n";
+        let mut slot = stored.to_vec();
+        slot.resize(512, 0);
+
+        let preset = Preset::parse(&slot).unwrap();
+        assert_eq!(preset.records()[0].subject(), crate::router::PATH);
+        let exported = preset.content();
+        assert_eq!(exported, stored, "export keeps the router record as it was");
+
+        let imported = Preset::parse(&exported).unwrap();
+        assert_eq!(imported.records()[0].subject(), crate::router::PATH);
+        let chain = crate::Router::from_value(&imported.records()[0].value()["value"]).unwrap();
+        assert_eq!(chain.positions(), 5);
+        assert_eq!(chain.stages(), vec![0..1, 1..4, 4..5]);
+        assert_eq!(chain.block(2), Some("root\\app\\delay"));
+        assert_eq!(imported.encode_padded(512).unwrap(), slot);
+
+        // Spelled with bare backslashes, as 1.5.12 spells node paths in its
+        // values, the record still reads as the chain and is kept as it is.
+        let bare =
+            b"root\\app\\router:{\"value\":[[\"root\\app\\gate\",\"p\",\"root\\app\\amp\"]]}\r\n";
+        let preset = Preset::parse(bare).unwrap();
+        assert_eq!(preset.content(), bare);
+        let chain = crate::Router::from_value(&preset.records()[0].value()["value"]).unwrap();
+        assert_eq!(chain.block(1), Some("root\\app\\amp"));
+    }
+
     #[test]
     fn rejects_hidden_data_after_padding() {
         assert!(matches!(

@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::router::RouterError;
 use crate::{DecodeError, Frame, NodePath};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +16,9 @@ pub enum NodeKind {
     Action,
     Control,
     Array,
+    /// Firmware 2.x's signal chain, `root\app\router`: one row of positions
+    /// and connectors (see [`crate::router`]).
+    Router,
     Unknown(String),
 }
 
@@ -29,6 +33,7 @@ impl NodeKind {
             Self::Action => "action",
             Self::Control => "ctrl",
             Self::Array => "array",
+            Self::Router => "router",
             Self::Unknown(value) => value,
         }
     }
@@ -45,6 +50,7 @@ impl From<String> for NodeKind {
             "action" => Self::Action,
             "ctrl" => Self::Control,
             "array" => Self::Array,
+            "router" => Self::Router,
             _ => Self::Unknown(value),
         }
     }
@@ -171,6 +177,22 @@ impl NodeDescription {
                     }
                 }
             }
+            Some(NodeKind::Router) => {
+                let row = crate::Router::from_value(value).map_err(NodeValueError::Router)?;
+                // The pedal ignores a row of any other length, so one is never
+                // sent: it would look written and change nothing.
+                let current = self.value.as_ref().or(self.default.as_ref());
+                if let Some(current) =
+                    current.and_then(|current| crate::Router::from_value(current).ok())
+                {
+                    if current.cells() != row.cells() {
+                        return Err(NodeValueError::Router(RouterError::WrongLength {
+                            expected: current.cells(),
+                            actual: row.cells(),
+                        }));
+                    }
+                }
+            }
             Some(NodeKind::List | NodeKind::Action | NodeKind::Control | NodeKind::Unknown(_))
             | None => return Err(NodeValueError::NotWritable),
         }
@@ -241,6 +263,8 @@ pub enum NodeValueError {
     MissingOptions,
     #[error("{value} is not one of the advertised options {options:?}")]
     NotAnOption { value: Value, options: Vec<Value> },
+    #[error(transparent)]
+    Router(RouterError),
 }
 
 #[cfg(test)]
@@ -256,6 +280,33 @@ mod tests {
         let node = &tree.nodes()[0].1;
         assert_eq!(node.kind, Some(NodeKind::Unknown("matrix".into())));
         assert_eq!(node.extra["new_flag"], true);
+    }
+
+    /// Firmware 2.x's chain is a node of its own kind, written as one row as
+    /// long as the pedal's.
+    #[test]
+    fn the_router_is_written_as_one_row_as_long_as_the_pedals() {
+        let frame = Frame::parse(
+            br#"root\app\router:{"type":"router","desc":"router","value":[["root\\app\\gate","s",""]],"fixed":[[false,false,true]]}"#,
+        )
+        .unwrap();
+        let tree = NodeTree::from_frame(&frame).unwrap();
+        let node = &tree.nodes()[0].1;
+        assert_eq!(node.kind, Some(NodeKind::Router));
+        assert_eq!(serde_json::to_value(&node.kind).unwrap(), "router");
+        assert!(node.extra.contains_key("fixed"));
+        assert!(node
+            .validate_value(&serde_json::json!([["", "p", "root\\app\\amp"]]))
+            .is_ok());
+        for wrong in [
+            serde_json::json!([["root\\app\\gate"]]),
+            serde_json::json!([["", "s", "", "s", ""]]),
+            serde_json::json!(["", "s", ""]),
+            serde_json::json!([["", 1, ""]]),
+            serde_json::json!("root\\app\\gate"),
+        ] {
+            assert!(node.validate_value(&wrong).is_err(), "{wrong}");
+        }
     }
 
     #[test]
