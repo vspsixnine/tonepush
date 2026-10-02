@@ -285,53 +285,72 @@ impl App {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::bg()))
             .show(root, |ui| {
+                // Scrolled, for when the library pane under it leaves it
+                // shorter than its contents.
                 let room = ui.max_rect();
-                let width = (room.width() - 64.0).min(720.0);
-                let left = room.left() + (room.width() - width) / 2.0;
-                let column = Rect::from_min_max(
-                    Pos2::new(left, room.top() + if compact { 26.0 } else { 44.0 }),
-                    Pos2::new(left + width, room.bottom() - 20.0),
-                );
-                let mut ui = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(column)
-                        .layout(egui::Layout::top_down(egui::Align::Min)),
-                );
-                let ui = &mut ui;
-                ui.spacing_mut().item_spacing.y = 0.0;
+                egui::ScrollArea::vertical()
+                    .id_salt("connect-page")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let width = (room.width() - 64.0).min(720.0);
+                        let left = room.left() + (room.width() - width) / 2.0;
+                        let column = Rect::from_min_max(
+                            Pos2::new(left, room.top() + if compact { 26.0 } else { 44.0 }),
+                            Pos2::new(left + width, room.bottom() - 20.0),
+                        );
+                        // Where the content starts, scrolled with it, so the
+                        // foot keeps its place however far the page scrolls.
+                        let origin = ui.cursor().top();
+                        ui.add_space(column.top() - room.top());
+                        ui.horizontal_top(|ui| {
+                            ui.add_space(column.left() - room.left());
+                            ui.allocate_ui_with_layout(
+                                Vec2::new(width, column.height()),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(width);
+                                    ui.spacing_mut().item_spacing.y = 0.0;
 
-                // The mark and the name.
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    let (mark, _) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::hover());
-                    theme::paint_mark(ui, mark);
-                    let mut job = egui::text::LayoutJob::default();
-                    job.append(
-                        "Tone",
-                        0.0,
-                        egui::TextFormat::simple(theme::bold(17.0), theme::text()),
-                    );
-                    job.append(
-                        "Push",
-                        0.0,
-                        egui::TextFormat::simple(theme::bold(17.0), theme::accent()),
-                    );
-                    ui.label(job);
-                });
-                ui.add_space(if compact { 14.0 } else { 22.0 });
-                let title = shell::title_galley(
-                    ui,
-                    "Plug in your pedal",
-                    if compact { 26.0 } else { 30.0 },
-                    theme::text(),
-                    width,
-                );
-                let (rect, _) = ui.allocate_exact_size(title.size(), Sense::hover());
-                ui.painter().galley(rect.min, title, Color32::PLACEHOLDER);
-                ui.add_space(8.0);
-                ui.scope(|ui| {
-                    ui.set_max_width(600.0);
-                    ui.add(
+                                    // The mark and the name.
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 10.0;
+                                        let (mark, _) = ui
+                                            .allocate_exact_size(Vec2::splat(28.0), Sense::hover());
+                                        theme::paint_mark(ui, mark);
+                                        let mut job = egui::text::LayoutJob::default();
+                                        job.append(
+                                            "Tone",
+                                            0.0,
+                                            egui::TextFormat::simple(
+                                                theme::bold(17.0),
+                                                theme::text(),
+                                            ),
+                                        );
+                                        job.append(
+                                            "Push",
+                                            0.0,
+                                            egui::TextFormat::simple(
+                                                theme::bold(17.0),
+                                                theme::accent(),
+                                            ),
+                                        );
+                                        ui.label(job);
+                                    });
+                                    ui.add_space(if compact { 14.0 } else { 22.0 });
+                                    let title = shell::title_galley(
+                                        ui,
+                                        "Plug in your pedal",
+                                        if compact { 26.0 } else { 30.0 },
+                                        theme::text(),
+                                        width,
+                                    );
+                                    let (rect, _) =
+                                        ui.allocate_exact_size(title.size(), Sense::hover());
+                                    ui.painter().galley(rect.min, title, Color32::PLACEHOLDER);
+                                    ui.add_space(8.0);
+                                    ui.scope(|ui| {
+                                        ui.set_max_width(600.0);
+                                        ui.add(
                         egui::Label::new(
                             egui::RichText::new(
                                 "TonePush finds it on USB by itself. Edits play on the pedal as \
@@ -343,66 +362,70 @@ impl App {
                         )
                         .wrap(),
                     );
-                });
-                ui.add_space(if compact { 16.0 } else { 22.0 });
+                                    });
+                                    ui.add_space(if compact { 16.0 } else { 22.0 });
 
-                // The two families.
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 14.0;
-                    let card = (width - 14.0) / 2.0;
-                    family(
-                        ui,
-                        card,
-                        if compact { 150.0 } else { 180.0 },
-                        Family::Hx,
-                        hx,
-                    );
-                    family(
-                        ui,
-                        card,
-                        if compact { 150.0 } else { 180.0 },
-                        Family::Pro,
-                        pro,
-                    );
-                });
-                if hx == Search::NotFound && pro == Search::NotFound {
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        look = theme::Button::new("Look again")
+                                    // The two families.
+                                    ui.horizontal_top(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 14.0;
+                                        let card = (width - 14.0) / 2.0;
+                                        family(
+                                            ui,
+                                            card,
+                                            if compact { 150.0 } else { 180.0 },
+                                            Family::Hx,
+                                            hx,
+                                        );
+                                        family(
+                                            ui,
+                                            card,
+                                            if compact { 150.0 } else { 180.0 },
+                                            Family::Pro,
+                                            pro,
+                                        );
+                                    });
+                                    if hx == Search::NotFound && pro == Search::NotFound {
+                                        ui.add_space(12.0);
+                                        ui.horizontal(|ui| {
+                                            look = theme::Button::new("Look again")
                             .small()
                             .icon(Icon::Usb)
                             .show(ui)
                             .on_hover_text("Look on USB for an HX pedal and a StompStation PRO")
                             .clicked();
-                        ui.add_space(10.0);
-                        let line = shell::galley(
+                                            ui.add_space(10.0);
+                                            let line = shell::galley(
                             ui,
                             "TonePush keeps checking USB while this page is open.",
                             theme::regular(12.5),
                             theme::muted(),
                         );
-                        let (spot, _) = ui.allocate_exact_size(line.size(), Sense::hover());
-                        ui.painter().galley(
-                            Pos2::new(spot.left(), spot.center().y - line.size().y / 2.0),
-                            line,
-                            Color32::PLACEHOLDER,
-                        );
-                    });
-                }
-                ui.add_space(if compact { 12.0 } else { 18.0 });
+                                            let (spot, _) =
+                                                ui.allocate_exact_size(line.size(), Sense::hover());
+                                            ui.painter().galley(
+                                                Pos2::new(
+                                                    spot.left(),
+                                                    spot.center().y - line.size().y / 2.0,
+                                                ),
+                                                line,
+                                                Color32::PLACEHOLDER,
+                                            );
+                                        });
+                                    }
+                                    ui.add_space(if compact { 12.0 } else { 18.0 });
 
-                // What is fine, what to do, and the step for HX pedals.
-                if let Some(access) = usb_access() {
-                    if access {
-                        check(
+                                    // What is fine, what to do, and the step for HX pedals.
+                                    if let Some(access) = usb_access() {
+                                        if access {
+                                            check(
                             ui,
                             Icon::CircleCheck,
                             theme::ok(),
                             "This computer can talk to USB pedals",
                             "The access rule for Line 6 and Sonulab pedals is installed.",
                         );
-                    } else {
-                        check(
+                                        } else {
+                                            check(
                             ui,
                             Icon::CircleAlert,
                             theme::hot(),
@@ -410,66 +433,83 @@ impl App {
                             "install.sh installs it, and the guide shows how by hand. Replug the \
                              pedal afterwards.",
                         );
-                    }
-                }
-                check(
-                    ui,
-                    Icon::Info,
-                    theme::info(),
-                    "Quit HX Edit and VoidX Control first",
-                    "Only one editor can use a pedal at a time.",
-                );
-                self.model_data_step(ui);
+                                        }
+                                    }
+                                    check(
+                                        ui,
+                                        Icon::Info,
+                                        theme::info(),
+                                        "Quit HX Edit and VoidX Control first",
+                                        "Only one editor can use a pedal at a time.",
+                                    );
+                                    self.model_data_step(ui);
 
-                // The library, and where to read more, at the foot.
-                let bottom = column.bottom() - 22.0;
-                let cursor = ui.cursor().top();
-                if bottom > cursor + 12.0 {
-                    ui.add_space(bottom - cursor - 12.0);
-                } else {
-                    ui.add_space(14.0);
-                }
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    let (spot, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                    theme::paint_icon(ui, Icon::Library, spot.center(), 14.0, theme::text_soft());
-                    let tones = self.lib_entries.len();
-                    theme::label(
-                        ui,
-                        &match tones {
-                            0 => "Your library is empty".to_owned(),
-                            1 => "Your library has 1 tone".to_owned(),
-                            n => format!("Your library has {n} tones"),
-                        },
-                        theme::regular(12.5),
-                        theme::text_soft(),
-                    );
-                    ui.add_space(4.0);
-                    open_library = link(ui, "Open it", theme::accent());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing.x = 18.0;
-                        if link(ui, "What's new", theme::muted()) {
-                            ui.ctx()
-                                .open_url(egui::OpenUrl::new_tab(crate::update::RELEASES));
-                        }
-                        if link(ui, "Guide", theme::muted()) {
-                            ui.ctx().open_url(egui::OpenUrl::new_tab(GUIDE));
-                        }
-                    });
-                });
-                ui.add_space(6.0);
-                theme::label(
+                                    // The library, and where to read more, at the foot.
+                                    let bottom = origin + (column.bottom() - room.top()) - 22.0;
+                                    let cursor = ui.cursor().top();
+                                    if bottom > cursor + 12.0 {
+                                        ui.add_space(bottom - cursor - 12.0);
+                                    } else {
+                                        ui.add_space(14.0);
+                                    }
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        let (spot, _) = ui
+                                            .allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                        theme::paint_icon(
+                                            ui,
+                                            Icon::Library,
+                                            spot.center(),
+                                            14.0,
+                                            theme::text_soft(),
+                                        );
+                                        let tones = self.lib_entries.len();
+                                        theme::label(
+                                            ui,
+                                            &match tones {
+                                                0 => "Your library is empty".to_owned(),
+                                                1 => "Your library has 1 tone".to_owned(),
+                                                n => format!("Your library has {n} tones"),
+                                            },
+                                            theme::regular(12.5),
+                                            theme::text_soft(),
+                                        );
+                                        ui.add_space(4.0);
+                                        open_library = link(ui, "Open it", theme::accent());
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.spacing_mut().item_spacing.x = 18.0;
+                                                if link(ui, "What's new", theme::muted()) {
+                                                    ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                                        crate::update::RELEASES,
+                                                    ));
+                                                }
+                                                if link(ui, "Guide", theme::muted()) {
+                                                    ui.ctx()
+                                                        .open_url(egui::OpenUrl::new_tab(GUIDE));
+                                                }
+                                            },
+                                        );
+                                    });
+                                    ui.add_space(6.0);
+                                    theme::label(
                     ui,
                     "Free and open source, MIT licensed. Not affiliated with Yamaha Guitar Group.",
                     theme::regular(11.0),
                     theme::faint(),
                 );
+                                    ui.add_space(10.0);
+                                },
+                            );
+                        });
+                    });
             });
         if look {
             self.look_for_pedal();
         }
         if open_library {
-            self.go_to(shell::Page::Library);
+            self.open_library(crate::LibraryView::Tones, tier);
         }
     }
 

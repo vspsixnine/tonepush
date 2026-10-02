@@ -64,6 +64,22 @@ pub struct Config {
     /// The backups saved to a file, newest first, for the Backups history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub backup_files: Vec<PathBuf>,
+    /// The library pane under the editor, as it was left at each size of
+    /// window ("small", "medium", "large"): its height and whether it is
+    /// folded to its tabs. A window that changes size finds the pane as it
+    /// was left at that size.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub library_pane: std::collections::BTreeMap<String, PaneSize>,
+}
+
+/// The library pane at one size of window.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PaneSize {
+    /// Its height open, in points, the audition bar not counted.
+    pub height: f32,
+    /// Folded to its tabs.
+    #[serde(default)]
+    pub folded: bool,
 }
 
 impl Config {
@@ -189,6 +205,34 @@ mod tests {
         config.account = None;
         let json = serde_json::to_string(&config).unwrap();
         assert!(!json.contains("token"), "{json}");
+    }
+
+    /// The library pane is remembered per size of window, and a file from
+    /// before it existed reads without one.
+    #[test]
+    fn the_library_pane_is_kept_per_size_of_window() {
+        let mut config = Config::default();
+        assert!(!serde_json::to_string(&config)
+            .unwrap()
+            .contains("library_pane"));
+        config.library_pane.insert(
+            "medium".into(),
+            PaneSize {
+                height: 300.0,
+                folded: true,
+            },
+        );
+        let json = serde_json::to_string(&config).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.library_pane.get("medium"),
+            Some(&PaneSize {
+                height: 300.0,
+                folded: true
+            })
+        );
+        let old: Config = serde_json::from_str(r#"{"favorites":[]}"#).unwrap();
+        assert!(old.library_pane.is_empty());
     }
 
     #[test]

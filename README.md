@@ -41,8 +41,8 @@ operation against the hardware:
 - **Backups with a history.** The whole pedal is read on every connect and
   kept current after every save, and the copy it replaces is set aside first,
   with why: the pedal connecting, a setlist or presets being written, a
-  restore. The Pedal page compares any copy with the pedal now and puts one
-  back whole.
+  restore. The pedal's Backups page compares any copy with the pedal now and
+  puts one back whole.
 - **Snapshots, setlists, tempo.** Switch, rename, and edit them.
 - **Device settings.** The global namespace HX Edit's preferences write to,
   readable and writable by id (`tonepush setting`, `set-setting`).

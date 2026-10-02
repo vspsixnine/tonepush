@@ -179,6 +179,12 @@ pub struct Grid {
     pub nothing_after_icon: &'static str,
     /// How tall a row is. Zero means [`ROW_HEIGHT`].
     pub row_height: f32,
+    /// How tall the header is. Zero means [`HEADER_HEIGHT`].
+    pub header_height: f32,
+    /// Scroll this row into view, by its place among the rows drawn: a row
+    /// chosen from elsewhere (the loaded preset's tone) is brought to where
+    /// it can be seen.
+    pub reveal: Option<usize>,
 }
 
 impl Grid {
@@ -334,15 +340,30 @@ pub fn show(ui: &mut Ui, id: &str, grid: &mut Grid) -> Did {
     };
     // The lines between columns show only where a column is being resized:
     // the design's table has none at rest.
+    let reveal = delegate.grid.reveal;
+    let headers = header_height(delegate.grid);
     ui.scope(|ui| {
         ui.visuals_mut().widgets.noninteractive.bg_stroke = Stroke::NONE;
-        egui_table::Table::new()
+        let mut table = egui_table::Table::new()
             .id_salt(id)
             .num_rows(delegate.grid.rows.len() as u64)
             .columns(columns)
             .num_sticky_cols(delegate.grid.sticky)
-            .headers([egui_table::HeaderRow::new(HEADER_HEIGHT)])
-            .show(ui, &mut delegate);
+            .headers([egui_table::HeaderRow::new(headers)]);
+        // Two rows above it, so it reads in its place in the list. Scrolling
+        // to rows alone also moves the table sideways, by however far the
+        // clip rect strays from the view, so the first column that scrolls is
+        // pinned to the left at the same time.
+        if let Some(row) = reveal {
+            let first = delegate.grid.sticky;
+            table = table
+                .scroll_to_rows(
+                    row.saturating_sub(2) as u64..=row as u64,
+                    Some(egui::Align::Min),
+                )
+                .scroll_to_columns(first..=first, Some(egui::Align::Min));
+        }
+        table.show(ui, &mut delegate);
     });
     delegate.did
 }
@@ -368,6 +389,15 @@ fn row_height(grid: &Grid) -> f32 {
         grid.row_height
     } else {
         ROW_HEIGHT
+    }
+}
+
+/// How tall this table's header is.
+fn header_height(grid: &Grid) -> f32 {
+    if grid.header_height > 0.0 {
+        grid.header_height
+    } else {
+        HEADER_HEIGHT
     }
 }
 
@@ -424,7 +454,7 @@ fn draw_headers(ui: &mut Ui, grid: &Grid) -> Option<(usize, bool)> {
                 column.width + PADDING
             };
             let (rect, hit) =
-                ui.allocate_exact_size(Vec2::new(width, HEADER_HEIGHT), Sense::click());
+                ui.allocate_exact_size(Vec2::new(width, header_height(grid)), Sense::click());
             if ui.is_rect_visible(rect) {
                 paint_header(
                     ui,
@@ -442,7 +472,7 @@ fn draw_headers(ui: &mut Ui, grid: &Grid) -> Option<(usize, bool)> {
     let full = ui.max_rect();
     ui.painter().hline(
         full.x_range(),
-        top + HEADER_HEIGHT - 0.5,
+        top + header_height(grid) - 0.5,
         Stroke::new(1.0, theme::line()),
     );
     changed

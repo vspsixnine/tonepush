@@ -720,6 +720,16 @@ impl Panel {
         self.online
     }
 
+    /// Whether the live preset has changes not saved.
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// The slot the pedal has loaded, when it says.
+    pub(crate) fn loaded_slot(&self) -> Option<usize> {
+        self.snapshot.as_ref().and_then(active_preset_index)
+    }
+
     pub(crate) fn device_name(&self) -> &str {
         self.snapshot
             .as_ref()
@@ -1024,12 +1034,25 @@ impl Panel {
         }
     }
 
-    /// The Edit page for a PRO: the strip that says saving waits, when it
-    /// does, the board, and the pane.
-    pub(crate) fn body(&mut self, root: &mut egui::Ui, tier: theme::Tier, note: &LibraryNote) {
+    /// The top of the Edit page for a PRO: the strip that says saving waits,
+    /// when it does, and the board. The library pane goes between this and
+    /// [`Self::body_pane`].
+    pub(crate) fn body_top(&mut self, root: &mut egui::Ui, tier: theme::Tier) {
         if self.update_mode || (self.firmware.is_some() && !self.online) {
             self.paused_strip(root);
         }
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        if self.unlock_offer().is_some() {
+            self.unlock_strip(root);
+        }
+        self.board(root, &snapshot, tier);
+    }
+
+    /// The rest of the Edit page for a PRO: the block pane under the board,
+    /// or what is going on while there is no preset to show.
+    pub(crate) fn body_pane(&mut self, root: &mut egui::Ui, tier: theme::Tier, note: &LibraryNote) {
         let Some(snapshot) = self.snapshot.clone() else {
             let status = self.status.clone();
             egui::CentralPanel::default()
@@ -1047,10 +1070,6 @@ impl Panel {
                 });
             return;
         };
-        if self.unlock_offer().is_some() {
-            self.unlock_strip(root);
-        }
-        self.board(root, &snapshot, tier);
         self.pane(root, &snapshot, tier, note);
     }
 

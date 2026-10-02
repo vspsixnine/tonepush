@@ -1,14 +1,14 @@
-//! The Library and Pedal pages (docs/design/redesign-2026-10-01, "One job per
-//! surface"). The library used to be a strip docked under the editor, and the
-//! pedal three floating windows opened from its name and two icons in the
-//! status bar; each is now a page of its own, with the loaded preset kept in
-//! the one-line deck above it.
+//! The pedal's own pages (docs/design/redesign-2026-10-01, "One job per
+//! surface", and docs/design/library-workflow-2026-10-02, "The pedal's
+//! pages"), opened from the device card, with the loaded preset kept in the
+//! one-line deck above them; and the library pane's own controls, its pedal
+//! scope and the account it publishes as.
 
-use egui::{CornerRadius, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use egui::{CornerRadius, Sense, Stroke, Ui, Vec2};
 
 use crate::shell;
 use crate::theme::{self, Icon, Mood, Tier};
-use crate::{session, App, Cmd, Connection, LibraryView, RichText};
+use crate::{session, App, Cmd, Connection, RichText};
 
 /// The tabs of an HX pedal's page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -23,7 +23,7 @@ pub(crate) enum PedalTab {
 }
 
 impl PedalTab {
-    const ALL: [PedalTab; 6] = [
+    pub(crate) const ALL: [PedalTab; 6] = [
         PedalTab::Backups,
         PedalTab::Irs,
         PedalTab::Favourites,
@@ -32,7 +32,7 @@ impl PedalTab {
         PedalTab::Activity,
     ];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             PedalTab::Backups => "Backups",
             PedalTab::Irs => "Impulse responses",
@@ -40,6 +40,18 @@ impl PedalTab {
             PedalTab::Eq => "Global EQ",
             PedalTab::Settings => "Settings",
             PedalTab::Activity => "Activity",
+        }
+    }
+
+    /// Its icon in the device card's menu.
+    pub(crate) fn icon(self) -> Icon {
+        match self {
+            PedalTab::Backups => Icon::History,
+            PedalTab::Irs => Icon::FileAudio,
+            PedalTab::Favourites => Icon::Star,
+            PedalTab::Eq => Icon::SlidersHorizontal,
+            PedalTab::Settings => Icon::Sliders,
+            PedalTab::Activity => Icon::Activity,
         }
     }
 }
@@ -126,136 +138,9 @@ impl App {
     // -----------------------------------------------------------------------
     // Library
 
-    /// The Library page: its head, then tones, setlists or Cloud.
-    pub(crate) fn library_page(&mut self, root: &mut Ui, tier: Tier) {
-        egui::Panel::top("library-head")
-            .exact_size(56.0)
-            .resizable(false)
-            .frame(egui::Frame::new().fill(theme::bg()))
-            .show(root, |ui| self.library_head(ui, tier));
-        self.library_body(root, tier);
-    }
-
-    /// "Library", which of its three views, the search, which pedals it is
-    /// scoped to and the account it publishes as.
-    fn library_head(&mut self, ui: &mut Ui, tier: Tier) {
-        let full = ui.max_rect();
-        let inner = Rect::from_min_max(
-            Pos2::new(full.left() + 20.0, full.top() + 2.0),
-            Pos2::new(full.right() - 16.0, full.bottom()),
-        );
-        let showing = self.lib_showing;
-        let right = ui
-            .scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(inner)
-                    .id_salt("library-head-right")
-                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    self.account_button(ui);
-                    if showing == LibraryView::Cloud {
-                        if theme::IconButton::new(Icon::RefreshCw)
-                            .show(ui)
-                            .on_hover_text("Fetch this search and order from TonePush again")
-                            .clicked()
-                        {
-                            self.refresh_cloud();
-                        }
-                        if self.auditioning.is_some()
-                            && theme::Button::new("Done auditioning")
-                                .small()
-                                .show(ui)
-                                .clicked()
-                        {
-                            self.end_audition();
-                        }
-                        if self.cloud_searching.is_some() || self.cloud_download.is_some() {
-                            let (spot, _) =
-                                ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
-                            shell::spin(ui, spot.center(), 5.5);
-                        }
-                    }
-                    // At the smallest size the table's own header menu
-                    // chooses the columns, and the search is narrower.
-                    if showing != LibraryView::Setlists && tier != Tier::S {
-                        self.columns_button(ui);
-                    }
-                    self.scope_button(ui);
-                    if showing != LibraryView::Setlists {
-                        self.filter_button(ui);
-                    }
-                    let width = tier.pick(140.0, 200.0, 240.0);
-                    let tones = self.scoped_tone_count();
-                    let (query, hint) = match showing {
-                        LibraryView::Tones => {
-                            (&mut self.tone_search, format!("Search {tones} tones"))
-                        }
-                        LibraryView::Setlists => {
-                            (&mut self.setlist_search, "Search setlists".to_owned())
-                        }
-                        LibraryView::Cloud => {
-                            (&mut self.library_search, "Search TonePush".to_owned())
-                        }
-                    };
-                    let search = theme::search_field(ui, "library-search", query, &hint, width);
-                    if search.changed() && showing == LibraryView::Cloud {
-                        self.cloud_search_due =
-                            Some(std::time::Instant::now() + std::time::Duration::from_millis(350));
-                    }
-                    if showing == LibraryView::Cloud
-                        && search.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                    {
-                        self.cloud_search_due = Some(std::time::Instant::now());
-                    }
-                },
-            )
-            .response
-            .rect;
-        let left = Rect::from_min_max(inner.min, Pos2::new(right.left() - 12.0, inner.bottom()));
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(left)
-                .id_salt("library-head-left")
-                .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            |ui| {
-                ui.spacing_mut().item_spacing.x = 18.0;
-                let title =
-                    shell::title_galley(ui, "Library", theme::PAGE_TITLE, theme::text(), 200.0);
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(title.size().x, 28.0), Sense::hover());
-                shell::paint_line(ui, title, rect.left(), rect.center().y);
-                let views = [
-                    LibraryView::Tones,
-                    LibraryView::Setlists,
-                    LibraryView::Cloud,
-                ];
-                let cloud_count = self.cloud_total.unwrap_or(self.cloud_entries.len());
-                let segments = [
-                    theme::Segment::new("Tones").suffix(self.scoped_tone_count().to_string()),
-                    theme::Segment::new("Setlists").suffix(self.scoped_setlist_count().to_string()),
-                    if cloud_count > 0 {
-                        theme::Segment::new("Cloud")
-                            .icon(Icon::Cloud)
-                            .suffix(cloud_count.to_string())
-                    } else {
-                        theme::Segment::new("Cloud").icon(Icon::Cloud)
-                    },
-                ];
-                let chosen = views.iter().position(|view| *view == self.lib_showing);
-                if let Some(index) =
-                    theme::segmented(ui, "library-views", &segments, chosen, false).clicked
-                {
-                    self.show_library_view(views[index]);
-                }
-            },
-        );
-    }
-
     /// Which pedals' tones the library shows: all of them, or the one
     /// connected.
-    fn scope_button(&mut self, ui: &mut Ui) {
+    pub(crate) fn scope_button(&mut self, ui: &mut Ui) {
         let selected = self
             .library_device_filter
             .clone()
@@ -299,7 +184,13 @@ impl App {
 
     /// Signing in to publish, and the account once signed in. Called inside
     /// a right-to-left layout.
-    fn account_button(&mut self, ui: &mut Ui) {
+    pub(crate) fn account_button(&mut self, ui: &mut Ui) {
+        self.account_control(ui, false);
+    }
+
+    /// The account, as its name or, where the head is crowded, as an icon
+    /// that names it on hover.
+    pub(crate) fn account_control(&mut self, ui: &mut Ui, compact: bool) {
         if let Some(signing) = &self.signing_in {
             let code = signing.code.clone();
             let url = signing.url.clone();
@@ -321,11 +212,17 @@ impl App {
         }
         match self.config.account.clone() {
             Some(account) => {
-                let button = theme::Button::new(&account)
-                    .ghost()
-                    .small()
-                    .trailing(Icon::ChevronDown)
-                    .show(ui);
+                let button = if compact {
+                    theme::IconButton::new(Icon::User)
+                        .show(ui)
+                        .on_hover_text(format!("{account} on TonePush"))
+                } else {
+                    theme::Button::new(&account)
+                        .ghost()
+                        .small()
+                        .trailing(Icon::ChevronDown)
+                        .show(ui)
+                };
                 let mut sign_out = false;
                 egui::Popup::menu(&button)
                     .align(egui::RectAlign::BOTTOM_END)

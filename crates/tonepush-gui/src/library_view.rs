@@ -445,6 +445,119 @@ pub(crate) fn marker(ui: &mut Ui, marker: Option<&crate::devices::Marker>, plays
     }
 }
 
+/// The voices of a where-row's words.
+#[derive(Clone, Copy)]
+pub(crate) enum Words {
+    Soft,
+    Bold,
+    Hot,
+    Faint,
+}
+
+/// A where-row's words as one line, each part in its voice.
+fn where_job(parts: &[(&str, Words)], width: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    for (text, voice) in parts {
+        let (font, colour) = match voice {
+            Words::Soft => (theme::regular(12.5), theme::text_soft()),
+            Words::Bold => (theme::semibold(12.5), theme::text()),
+            Words::Hot => (theme::regular(12.5), theme::hot()),
+            Words::Faint => (theme::regular(12.5), theme::faint()),
+        };
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                font_id: font,
+                color: colour,
+                ..Default::default()
+            },
+        );
+    }
+    job.wrap = egui::text::TextWrapping {
+        max_width: width.max(20.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    job
+}
+
+/// One line of where a tone is (the design's inspector): an icon in its own
+/// column, the words, and the next action there as a small button at the
+/// right. Returns whether the action was pressed.
+pub(crate) fn where_row(
+    ui: &mut Ui,
+    icon: Icon,
+    ink: Color32,
+    parts: &[(&str, Words)],
+    action: Option<&str>,
+) -> bool {
+    where_line(ui, icon, ink, parts, action).0
+}
+
+/// The same, with the reason on the row's hover and no action.
+pub(crate) fn where_row_hover(
+    ui: &mut Ui,
+    icon: Icon,
+    ink: Color32,
+    parts: &[(&str, Words)],
+    hover: &str,
+) {
+    let (_, row) = where_line(ui, icon, ink, parts, None);
+    if !hover.is_empty() {
+        row.on_hover_text(hover);
+    }
+}
+
+fn where_line(
+    ui: &mut Ui,
+    icon: Icon,
+    ink: Color32,
+    parts: &[(&str, Words)],
+    action: Option<&str>,
+) -> (bool, Response) {
+    let width = ui.available_width();
+    let (rect, row) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::hover());
+    let mut pressed = false;
+    let mut right = rect.right();
+    if let Some(action) = action {
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .id_salt(("where-action", action))
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        pressed = theme::Button::new(action)
+            .small()
+            .show(&mut child)
+            .clicked();
+        right = child.min_rect().left() - 8.0;
+    }
+    theme::paint_icon(
+        ui,
+        icon,
+        Pos2::new(rect.left() + 8.0, rect.center().y),
+        14.0,
+        ink,
+    );
+    let left = rect.left() + 16.0 + 9.0;
+    let galley = ui.painter().layout_job(where_job(parts, right - left));
+    shell::paint_line(ui, galley, left, rect.center().y);
+    (pressed, row)
+}
+
+/// A hairline across the inspector, its padding included.
+fn rule(ui: &mut Ui) {
+    let width = ui.available_width();
+    let (place, _) = ui.allocate_exact_size(Vec2::new(width, 9.0), Sense::hover());
+    ui.painter().hline(
+        (place.left() - 16.0)..=(place.right() + 16.0),
+        place.center().y,
+        Stroke::new(1.0, theme::line_soft()),
+    );
+}
+
 /// A tag as a removable chip.
 fn tag_chip(ui: &mut Ui, tag: &str) -> bool {
     let galley = shell::galley(ui, tag, theme::medium(12.0), theme::text_soft());
@@ -478,70 +591,153 @@ fn tag_chip(ui: &mut Ui, tag: &str) -> bool {
 impl App {
     /// The inspector's width at each size of window.
     fn inspector_width(tier: Tier) -> f32 {
-        tier.pick(280.0, 320.0, 380.0)
+        tier.pick(280.0, 300.0, 400.0)
     }
 
-    /// Tones and the Cloud are a table and an inspector; setlists are cards
-    /// beside the chosen one's banks.
-    pub(crate) fn library_body(&mut self, root: &mut Ui, tier: Tier) {
-        match self.lib_showing {
-            view @ (LibraryView::Tones | LibraryView::Cloud) => {
-                let cloud = view == LibraryView::Cloud;
-                egui::Panel::right("tone-inspector")
-                    .resizable(true)
-                    .default_size(Self::inspector_width(tier))
-                    .size_range(260.0..=520.0)
-                    // The panel's own separator is the one line on its left.
-                    .frame(egui::Frame::new().fill(theme::bg()))
-                    .show(root, |ui| {
-                        // Scrolled, not grown: the inspector's fields must not
-                        // decide the page's height.
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .id_salt("tone-inspector-scroll")
-                            .show(ui, |ui| {
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin {
-                                        left: 16,
-                                        right: 16,
-                                        top: 14,
-                                        bottom: 16,
-                                    })
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        if cloud {
-                                            self.cloud_tone_inspector(ui);
-                                        } else {
-                                            self.tone_inspector(ui);
-                                        }
-                                    });
-                            });
-                    });
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::new().fill(theme::bg()))
-                    .show(root, |ui| {
+    /// The details beside a table: the chosen tone, or with nothing chosen
+    /// the loaded preset's. Scrolled, not grown: its fields must not decide
+    /// the pane's height.
+    fn inspector_contents(&mut self, ui: &mut Ui, cloud: bool) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .id_salt("tone-inspector-scroll")
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 16,
+                        top: 12,
+                        bottom: 16,
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
                         if cloud {
-                            if let Some(why) = self.cloud_error.clone() {
-                                ui.add_space(8.0);
-                                ui.horizontal(|ui| {
-                                    ui.add_space(16.0);
-                                    theme::label(
-                                        ui,
-                                        &why,
-                                        theme::regular(theme::SECONDARY),
-                                        theme::danger(),
-                                    );
-                                });
-                                ui.add_space(4.0);
-                            }
-                            self.cloud_table(ui);
+                            self.cloud_tone_inspector(ui);
                         } else {
-                            self.library_table(ui);
+                            self.tone_inspector(ui);
                         }
                     });
-            }
-            LibraryView::Setlists => self.setlists_view(root, tier),
+            });
+    }
+
+    /// Tones and the Cloud as a table beside the chosen tone's details. On
+    /// the smallest window the details open over the table from their button
+    /// in the pane's header.
+    pub(crate) fn library_body(&mut self, root: &mut Ui, tier: Tier) {
+        let cloud = self.lib_showing == LibraryView::Cloud;
+        if !cloud {
+            self.follow_loaded_tone();
         }
+        let body = root.max_rect();
+        if tier != Tier::S {
+            egui::Panel::right("tone-inspector")
+                .resizable(true)
+                .default_size(Self::inspector_width(tier))
+                .size_range(260.0..=520.0)
+                // The panel's own separator is the one line on its left.
+                .frame(egui::Frame::new().fill(theme::bg()))
+                .show(root, |ui| {
+                    // As wide as the panel was made, whatever is in it: a
+                    // side panel otherwise grows to the widest thing it holds.
+                    let rect = ui.max_rect();
+                    let mut inner = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    inner.set_clip_rect(rect.intersect(ui.clip_rect()));
+                    self.inspector_contents(&mut inner, cloud);
+                    ui.advance_cursor_after_rect(rect);
+                });
+        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(theme::bg()))
+            .show(root, |ui| {
+                if cloud {
+                    if let Some(why) = self.cloud_error.clone() {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
+                            theme::label(
+                                ui,
+                                &why,
+                                theme::regular(theme::SECONDARY),
+                                theme::danger(),
+                            );
+                            if theme::Button::new("Try again")
+                                .ghost()
+                                .small()
+                                .show(ui)
+                                .clicked()
+                            {
+                                self.refresh_cloud();
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+                    self.cloud_table(ui);
+                } else {
+                    self.library_table(ui);
+                }
+            });
+        if tier == Tier::S && self.pane.details {
+            let width = Self::inspector_width(tier);
+            let rect = Rect::from_min_max(Pos2::new(body.right() - width, body.top()), body.max);
+            egui::Area::new(egui::Id::new("tone-inspector-over"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(rect.min)
+                .show(root.ctx(), |ui| {
+                    egui::Frame::new()
+                        .fill(theme::bg())
+                        .stroke(Stroke::new(1.0, theme::line_strong()))
+                        .shadow(ui.style().visuals.popup_shadow)
+                        .show(ui, |ui| {
+                            ui.set_min_size(rect.size());
+                            ui.set_max_size(rect.size());
+                            self.inspector_contents(ui, cloud);
+                        });
+                });
+        }
+    }
+
+    /// With nothing chosen, the details are the loaded preset's tone's, the
+    /// whole of them: chosen for it, and moved when another preset loads.
+    fn follow_loaded_tone(&mut self) {
+        if self.lib_selected.is_some() && !self.lib_follows {
+            return;
+        }
+        let loaded = self.loaded_tone();
+        if loaded == self.lib_selected {
+            return;
+        }
+        match loaded {
+            Some(index) => self.select_lib_entry(index),
+            None => self.lib_selected = None,
+        }
+        self.lib_follows = true;
+    }
+
+    /// How many tones this library published, for the Cloud's Mine.
+    pub(crate) fn mine_count(&self) -> usize {
+        0
+    }
+
+    /// Cloud, Mine: what this library published.
+    pub(crate) fn mine_view(&mut self, ui: &mut Ui, _tier: Tier) {
+        let rect = ui.max_rect();
+        let words = if self.config.token.is_some() {
+            "Tones you publish from this library appear here, with their downloads and versions."
+        } else {
+            "Sign in to TonePush, and the tones you publish from this library appear here."
+        };
+        crate::pane::centred(
+            ui,
+            words,
+            theme::regular(theme::BODY),
+            theme::muted(),
+            Pos2::new(rect.center().x, rect.top() + 48.0),
+            rect.width() - 40.0,
+        );
     }
 
     /// The tags to filter tones by, and the order of the Cloud's, as one
@@ -672,55 +868,233 @@ impl App {
         self.apply_column_visibility(changed);
     }
 
-    /// Where a tone is, said in words: on the pedal at a slot, not on it yet,
-    /// or for the other family of pedal.
-    fn tone_whereabouts(&mut self, index: usize) -> (String, Option<&'static str>) {
-        let entry = &self.lib_entries[index];
-        let (hash, name) = (entry.hash.clone(), entry.name.clone());
-        let device = if self.device.trim().is_empty() {
-            "pedal".to_owned()
-        } else {
-            self.device.trim().to_owned()
-        };
+    /// The library tone that is the loaded preset: the one whose bytes the
+    /// pedal's slot holds, or else the one of its name.
+    pub(crate) fn loaded_tone(&self) -> Option<usize> {
         if !self.pedal_online() {
-            return (
-                "Plug in a pedal to send it to one of its slots.".to_owned(),
-                None,
-            );
+            return None;
         }
-        if !self.tone_kind_compatible(&hash) {
-            return (
-                if entry.pro {
-                    "A StompStation PRO tone: it goes on a PRO.".to_owned()
-                } else {
-                    "An HX tone: it goes on an HX pedal.".to_owned()
-                },
-                None,
-            );
+        if self.pro_active() {
+            let (name, _) = self.pro.loaded(&self.library_lookup)?;
+            return self.lib_entries.iter().position(|entry| {
+                entry.pro && entry.name.trim().eq_ignore_ascii_case(name.trim())
+            });
         }
-        match self.tone_sync(&hash, &name) {
-            theme::Sync::Same => {
-                let slot = if self.pro_active() {
-                    None
-                } else {
-                    self.mirror
-                        .iter()
-                        .find(|(_, held)| **held == hash)
-                        .map(|(slot, _)| self.active_slot_label(*slot))
-                };
-                (
-                    match slot {
-                        Some(slot) => format!("On the {device} at {slot}."),
-                        None => format!("On the {device}."),
-                    },
-                    Some("Send again"),
-                )
+        if self.preset_index < 0 {
+            return None;
+        }
+        let held = self.mirror.get(&self.preset_index);
+        held.and_then(|hash| {
+            self.lib_entries
+                .iter()
+                .position(|entry| &entry.hash == hash)
+        })
+        .or_else(|| {
+            self.lib_entries.iter().position(|entry| {
+                !entry.pro
+                    && entry
+                        .name
+                        .trim()
+                        .eq_ignore_ascii_case(self.preset_name.trim())
+            })
+        })
+    }
+
+    /// The slot on the pedal holding a tone's very bytes, when the pedal
+    /// says.
+    fn slot_holding(&self, hash: &str) -> Option<i64> {
+        if self.pro_active() {
+            let (hashes, _) = self.pro.pedal_slots()?;
+            return hashes
+                .iter()
+                .find(|(_, held)| held.as_str() == hash)
+                .map(|(slot, _)| *slot);
+        }
+        self.mirror
+            .iter()
+            .find(|(_, held)| held.as_str() == hash)
+            .map(|(slot, _)| *slot)
+    }
+
+    /// The line under a tone's name: its marker, then its version, its
+    /// character and when it was kept.
+    fn marker_line(&self, ui: &mut Ui, entry: &crate::LibEntry, version: String) {
+        let plays = self.fit(entry, false).plays;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 7.0;
+            marker(ui, entry.marker.as_ref(), plays);
+            let mut words = vec![version];
+            if !entry.meta.character.trim().is_empty() {
+                words.push(shell::sentence_case(entry.meta.character.trim()));
             }
-            theme::Sync::Differs => (
-                format!("The {device} holds another version of {name}."),
-                Some("Send this one"),
-            ),
-            _ => (format!("Not on the {device} yet."), Some("Send to a slot")),
+            if !entry.added_at.is_empty() {
+                words.push(format!("kept {}", crate::day_month(&entry.added_at)));
+            }
+            theme::label_truncated(ui, &words.join(" · "), theme::regular(12.0), theme::muted());
+        });
+    }
+
+    /// Where a library tone is, a line for each place with what can be done
+    /// there: the pedal (loaded, in a slot, not there yet, or not a pedal it
+    /// plays), this computer, and TonePush.
+    fn tone_where(&mut self, ui: &mut Ui, index: usize) {
+        let entry = self.lib_entries[index].clone();
+        let device = match self.device.trim() {
+            "" => "pedal".to_owned(),
+            device => device.to_owned(),
+        };
+        let loaded = self.loaded_tone() == Some(index);
+        let dirty = if self.pro_active() {
+            self.pro.is_dirty()
+        } else {
+            self.dirty
+        };
+        let loaded_slot = if self.pro_active() {
+            self.pro.loaded_slot().map(|slot| slot as i64)
+        } else {
+            (self.preset_index >= 0).then_some(self.preset_index)
+        };
+        // The pedal.
+        let sending = self.sending.as_ref().is_some_and(|s| s.hash == entry.hash);
+        if sending {
+            if where_row(
+                ui,
+                Icon::Download,
+                theme::accent(),
+                &[("Choose a slot in the presets on the left", Words::Soft)],
+                Some("Cancel"),
+            ) {
+                self.sending = None;
+            }
+        } else if !self.pedal_online() {
+            let plays = entry.marker.as_ref().map_or_else(
+                || "Plays on its own pedal".to_owned(),
+                |marker| format!("Plays on {}", marker.with_article()),
+            );
+            where_row(
+                ui,
+                Icon::Pedal,
+                theme::muted(),
+                &[(&plays, Words::Soft)],
+                None,
+            );
+        } else if let Some(why) =
+            self.refusal_hint(entry.marker.as_ref(), &entry.firmware, entry.pro)
+        {
+            let plays = entry.marker.as_ref().map_or(why.clone(), |marker| {
+                let mut words = format!("Plays on {}", marker.with_article());
+                if marker.family == crate::devices::Family::Pro && !marker.model.is_empty() {
+                    words = format!("{words} on {}", marker.model);
+                }
+                words
+            });
+            where_row_hover(
+                ui,
+                Icon::Ban,
+                theme::muted(),
+                &[(&plays, Words::Soft)],
+                &why,
+            );
+        } else if loaded {
+            let slot = loaded_slot
+                .map(|slot| self.active_slot_label(slot))
+                .unwrap_or_default();
+            let mut words = vec![("Loaded in ", Words::Soft), (slot.as_str(), Words::Bold)];
+            if dirty {
+                words.push((" · ", Words::Faint));
+                words.push(("changes not saved", Words::Hot));
+            }
+            where_row(ui, Icon::Pedal, theme::text_soft(), &words, None);
+        } else if let Some(slot) = self.slot_holding(&entry.hash) {
+            let label = self.active_slot_label(slot);
+            let go = format!("Go to {label}");
+            if where_row(
+                ui,
+                Icon::Pedal,
+                theme::text_soft(),
+                &[
+                    (&format!("On the {device} at "), Words::Soft),
+                    (&label, Words::Bold),
+                ],
+                Some(&go),
+            ) {
+                self.request_preset(slot);
+            }
+        } else {
+            let words = match self.tone_sync(&entry.hash, &entry.name) {
+                theme::Sync::Differs => format!("The {device} holds another version"),
+                _ => format!("Not on the {device} yet"),
+            };
+            if where_row(
+                ui,
+                Icon::Pedal,
+                theme::muted(),
+                &[(&words, Words::Soft)],
+                Some("Put in a slot…"),
+            ) {
+                self.start_sending(index);
+            }
+        }
+        // This computer.
+        let version = format!("v{}", entry.version);
+        let keep_as = format!("Keep as v{}", entry.versions + 1);
+        let offer_keep = loaded && dirty && !self.pro_active();
+        if where_row(
+            ui,
+            Icon::Computer,
+            theme::text_soft(),
+            &if offer_keep {
+                vec![
+                    ("In your library as ", Words::Soft),
+                    (&version, Words::Bold),
+                ]
+            } else {
+                vec![("In your library · ", Words::Soft), (&version, Words::Bold)]
+            },
+            offer_keep.then_some(keep_as.as_str()),
+        ) {
+            self.keep_edit_as_version();
+        }
+        // TonePush.
+        let publishing = self
+            .publishing
+            .as_ref()
+            .is_some_and(|p| p.hash == entry.hash);
+        match (publishing, self.cloud_sync(&entry.hash)) {
+            (true, _) => {
+                where_row(
+                    ui,
+                    Icon::Cloud,
+                    theme::accent(),
+                    &[("Publishing on TonePush…", Words::Soft)],
+                    None,
+                );
+            }
+            (false, theme::Sync::Same) => {
+                let open = where_row(
+                    ui,
+                    Icon::Cloud,
+                    theme::text_soft(),
+                    &[("Published on TonePush", Words::Soft)],
+                    Some("Open"),
+                );
+                if open {
+                    self.publish_or_open(index, ui.ctx());
+                }
+            }
+            (false, theme::Sync::Absent | theme::Sync::Differs) => {
+                let publish = where_row(
+                    ui,
+                    Icon::Cloud,
+                    theme::muted(),
+                    &[("Not on TonePush", Words::Soft)],
+                    Some("Publish…"),
+                );
+                if publish {
+                    self.publish_or_open(index, ui.ctx());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -772,81 +1146,17 @@ impl App {
         } else {
             "v1".to_owned()
         };
-        let plays = self.fit(&entry, false).plays;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 7.0;
-            marker(ui, entry.marker.as_ref(), plays);
-            let mut words = vec![version];
-            if !entry.meta.character.trim().is_empty() {
-                words.push(shell::sentence_case(entry.meta.character.trim()));
-            }
-            if !entry.added_at.is_empty() {
-                words.push(format!("kept {}", crate::day_month(&entry.added_at)));
-            }
-            theme::label_truncated(ui, &words.join(" · "), theme::regular(12.0), theme::muted());
-        });
-        if !entry.chain.is_empty() {
+        self.marker_line(ui, &entry, version);
+        if !entry.chain.is_empty() && theme::Tier::now(ui.ctx()) == Tier::L {
             ui.add_space(8.0);
             chain_wells(ui, &entry.chain);
         }
-        ui.add_space(10.0);
-
-        // Where it is.
-        section(ui, "On the pedal");
-        let sending = self.sending.as_ref().is_some_and(|s| s.hash == hash);
-        if sending {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(
-                        "Choose a slot in the presets on the left: free ones are amber, and a \
-                         used one says what it replaces.",
-                    )
-                    .font(theme::regular(theme::SECONDARY))
-                    .color(theme::muted()),
-                )
-                .wrap(),
-            );
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                theme::Chip::new("Choosing a slot…")
-                    .mood(Mood::Accent)
-                    .icon(Icon::Download)
-                    .height(26.0)
-                    .show(ui);
-                if theme::Button::new("Cancel")
-                    .ghost()
-                    .small()
-                    .show(ui)
-                    .clicked()
-                {
-                    self.sending = None;
-                }
-            });
-        } else {
-            let (words, action) = self.tone_whereabouts(i);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(words)
-                        .font(theme::regular(theme::SECONDARY))
-                        .color(theme::muted()),
-                )
-                .wrap(),
-            );
-            if let Some(action) = action {
-                ui.add_space(6.0);
-                if theme::Button::new(action)
-                    .small()
-                    .icon(Icon::Download)
-                    .show(ui)
-                    .on_hover_text("Choose the slot it goes into, in the presets on the left")
-                    .clicked()
-                {
-                    self.start_sending(i);
-                }
-            }
-        }
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+        rule(ui);
+        // Where it is: the pedal, this computer, TonePush, each with what
+        // can be done about it.
+        self.tone_where(ui, i);
+        ui.add_space(4.0);
 
         // What it is.
         section(ui, "Song and tone");
@@ -1037,8 +1347,8 @@ impl App {
         let mut publish = false;
         let mut export = false;
         let mut remove = false;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(10.0, 8.0);
             publish = theme::Button::new(if published {
                 "Open on TonePush"
             } else if publishing {
@@ -1417,7 +1727,7 @@ impl App {
     }
 
     /// The setlists, as cards down the left, and the chosen one beside them.
-    fn setlists_view(&mut self, root: &mut Ui, tier: Tier) {
+    pub(crate) fn setlists_view(&mut self, root: &mut Ui, tier: Tier) {
         egui::Panel::left("lib-setlists")
             .resizable(false)
             .exact_size(tier.pick(270.0, 300.0, 340.0))
@@ -2395,6 +2705,61 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With nothing chosen the details are the loaded preset's tone, and they
+    /// move with it; a tone chosen by a click stays chosen when another
+    /// preset loads.
+    #[test]
+    fn the_details_follow_the_loaded_preset_until_a_tone_is_chosen() {
+        let (to_device, _nowhere) = std::sync::mpsc::channel();
+        let (_silent, from_device) = std::sync::mpsc::channel();
+        let mut app = App::new(&egui::Context::default(), to_device, from_device);
+        let tone = |name: &str| crate::LibEntry {
+            hash: format!("{name}-hash"),
+            series: format!("{name}-series"),
+            name: name.to_owned(),
+            line: String::new(),
+            meta: library::Meta {
+                name: name.to_owned(),
+                ..Default::default()
+            },
+            added_at: String::new(),
+            modified_at: String::new(),
+            downloads: None,
+            rating: None,
+            version: 1,
+            versions: 1,
+            chain: Vec::new(),
+            pro: false,
+            marker: Some(crate::devices::Marker::hx("Stomp")),
+            firmware: "3.80".to_owned(),
+        };
+        app.lib_entries = vec![
+            tone("Glass Clean"),
+            tone("Plexi Crunch"),
+            tone("Brown Lead"),
+        ];
+        app.connection = crate::Connection::Online;
+        app.device = "HX Stomp".into();
+        let load = |app: &mut App, index: i64, name: &str| {
+            app.preset_index = index;
+            app.preset_name = name.to_owned();
+            app.follow_loaded_tone();
+        };
+
+        load(&mut app, 1, "Plexi Crunch");
+        assert_eq!(app.lib_selected, Some(1));
+        assert_eq!(
+            app.lib_draft.name, "Plexi Crunch",
+            "its details are drafted"
+        );
+        load(&mut app, 2, "Brown Lead");
+        assert_eq!(app.lib_selected, Some(2), "they move with the preset");
+
+        app.select_lib_entry(0);
+        load(&mut app, 1, "Plexi Crunch");
+        assert_eq!(app.lib_selected, Some(0), "a chosen tone stays chosen");
+    }
 
     fn slot(hash: &str, name: &str) -> library::Slot {
         library::Slot {

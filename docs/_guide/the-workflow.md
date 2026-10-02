@@ -32,13 +32,13 @@ Every tone says which pedal it is for, in the **Pedal** column of the library an
 
 ### 3. Build a setlist
 
-Get the pedal holding the presets you want, in the order you want them, then click the computer icon at the top of the preset list (**Keep every preset on the pedal, in order, as a setlist**), or **Keep the whole pedal as a setlist** under Library, Setlists. That records every slot and what is in it; name it, and it opens on the Library page.
+Get the pedal holding the presets you want, in the order you want them, then click the computer icon at the top of the preset list (**Keep every preset on the pedal, in order, as a setlist**), or **Keep the whole pedal as a setlist** on the library's Setlists tab. That records every slot and what is in it; name it, and it opens on that tab.
 
 Give it the name of the gig, the venue, the date. You will want them later; click any of them on the setlist's page to change it.
 
 ### 4. Play it back
 
-Library, Setlists shows each setlist against what is on the pedal now: its card says whether it matches the pedal or how many slots differ, and its page lays the slots out bank by bank, marking the ones that hold another preset and naming the ones it would empty. The switch beside the count narrows the banks to the slots that differ.
+The library's Setlists tab shows each setlist against what is on the pedal now: its card says whether it matches the pedal or how many slots differ, and its page lays the slots out bank by bank, marking the ones that hold another preset and naming the ones it would empty. The switch beside the count narrows the banks to the slots that differ.
 
 **Put on HX Stomp…** (named after your pedal) writes the whole thing back. It asks first, and says what the write changes: the presets it replaces, the slots it empties and fills, and how many already match. It writes every slot, in order, so tick **Keep the pedal as it is now as a setlist first** if you want what is on it now as a setlist too; nothing is written until that copy is in your library. On an HX pedal the pedal as it was is also kept in its backups (see below).
 

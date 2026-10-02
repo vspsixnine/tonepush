@@ -1,12 +1,14 @@
 //! The frame every page sits in (docs/design/redesign-2026-10-01, "The
-//! frame"): the sidebar with the pedal and its presets, the deck with the
-//! loaded preset, and the switch between the Edit, Library and Pedal pages.
+//! frame", and docs/design/library-workflow-2026-10-02, "The frame"): the
+//! sidebar with the pedal and its presets, the deck with the loaded preset,
+//! the library in a pane under the editor, and the pedal's own pages.
 //!
 //! The status bar and the floating device, preferences and EQ windows are
-//! gone. The pedal's name, connection and firmware are the sidebar's device
-//! card; what was behind them is the Pedal page; work under way and problems
-//! are the deck's state line; the version and the update offer are in the
-//! settings under the sidebar's foot.
+//! gone, and so is the switch between pages. The pedal's name, connection
+//! and firmware are the sidebar's device card, and the card is the pedal: a
+//! click shows its own pages where the editor is, and its chevron lists them.
+//! Work under way and problems are the deck's state line; the version and
+//! the update offer are in the settings under the sidebar's foot.
 //!
 //! The pieces here that know nothing of either protocol (preset rows, the
 //! deck's parts, the mini deck, page heads) are shared with the StompStation
@@ -19,25 +21,13 @@ use egui::{Color32, CornerRadius, FontId, Galley, Pos2, Rect, Response, Sense, S
 use crate::theme::{self, Icon, Mood, Tier};
 use crate::{session, App, Cmd, Connection};
 
-/// The three pages: the loaded preset, the library, the pedal itself.
+/// What the main column shows: the loaded preset, or the pedal's own pages.
+/// The library is a pane under either, not a page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Page {
     #[default]
     Edit,
-    Library,
     Pedal,
-}
-
-impl Page {
-    pub(crate) const ALL: [Page; 3] = [Page::Edit, Page::Library, Page::Pedal];
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Page::Edit => "Edit",
-            Page::Library => "Library",
-            Page::Pedal => "Pedal",
-        }
-    }
 }
 
 /// The sidebar's width at each size.
@@ -354,9 +344,28 @@ pub(crate) struct DeviceCard {
     pub online: bool,
 }
 
+/// One of the pedal's own pages, as the device card's menu lists it.
+pub(crate) struct PedalPage {
+    pub label: String,
+    pub icon: Icon,
+    /// How many it holds, for the libraries.
+    pub count: Option<String>,
+}
+
+/// What the device card was asked: its pages (a click on the card), or the
+/// menu of them (its chevron).
+pub(crate) struct CardAsked {
+    pub pages: bool,
+    pub chevron: Response,
+    /// The card, which its menu opens under.
+    pub card: Rect,
+}
+
 /// The pedal: a drawing of one in a well, its name, how it is connected, and
-/// a chevron that opens what can be done to the connection.
-pub(crate) fn device_card(ui: &mut Ui, card: &DeviceCard) -> Response {
+/// a chevron that opens the menu of its pages and what can be done to the
+/// connection. A click on the card shows the pedal's own pages; it reads as
+/// chosen while they show.
+pub(crate) fn device_card(ui: &mut Ui, card: &DeviceCard, chosen: bool) -> CardAsked {
     ui.add_space(10.0);
     let full = ui.available_width();
     let (outer, _) = ui.allocate_exact_size(Vec2::new(full, 52.0), Sense::hover());
@@ -365,17 +374,31 @@ pub(crate) fn device_card(ui: &mut Ui, card: &DeviceCard) -> Response {
         Pos2::new(outer.left() + 10.0, outer.top()),
         Pos2::new(outer.right() - 10.0, outer.bottom()),
     );
+    let chevron_rect = Rect::from_min_max(Pos2::new(rect.right() - 32.0, rect.top()), rect.max);
     let response = ui.interact(rect, ui.id().with("device-card"), Sense::click());
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let chevron = ui
+        .interact(chevron_rect, device_card_chevron(), Sense::click())
+        .on_hover_text("The pedal's pages, and letting it go");
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&chevron));
+    let response = response.on_hover_text("Show the pedal's own pages");
     ui.painter().rect(
         rect,
         CornerRadius::same(12),
-        if response.hovered() || open {
+        if chosen {
+            theme::hover()
+        } else if response.hovered() || chevron.hovered() || open {
             theme::raised()
         } else {
             theme::panel()
         },
-        Stroke::new(1.0, theme::line()),
+        Stroke::new(
+            1.0,
+            if chosen {
+                theme::line_strong()
+            } else {
+                theme::line()
+            },
+        ),
         egui::StrokeKind::Inside,
     );
     let well = Rect::from_min_size(
@@ -418,41 +441,32 @@ pub(crate) fn device_card(ui: &mut Ui, card: &DeviceCard) -> Response {
         room - 12.0,
     );
     paint_line(ui, status, left + 12.0, rect.center().y + 8.5);
+    if chevron.hovered() {
+        ui.painter().rect_filled(
+            Rect::from_center_size(
+                Pos2::new(rect.right() - 17.0, rect.center().y),
+                Vec2::splat(24.0),
+            ),
+            CornerRadius::same(6),
+            theme::hover(),
+        );
+    }
     theme::paint_icon(
         ui,
         Icon::ChevronsUpDown,
         Pos2::new(rect.right() - 17.0, rect.center().y),
         14.0,
-        theme::muted(),
+        if chevron.hovered() {
+            theme::text()
+        } else {
+            theme::muted()
+        },
     );
-    response
-}
-
-/// Edit, Library and Pedal: which page the window shows. Returns the page
-/// asked for.
-pub(crate) fn page_switch(ui: &mut Ui, page: Page) -> Option<Page> {
-    let mut asked = None;
-    ui.horizontal(|ui| {
-        ui.add_space(10.0);
-        let width = ui.available_width() - 10.0;
-        ui.allocate_ui_with_layout(
-            Vec2::new(width, 30.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                let segments: Vec<theme::Segment> = Page::ALL
-                    .iter()
-                    .map(|page| theme::Segment::new(page.label()))
-                    .collect();
-                let chosen = Page::ALL.iter().position(|p| *p == page);
-                if let Some(index) = theme::segmented(ui, "pages", &segments, chosen, true).clicked
-                {
-                    asked = Some(Page::ALL[index]);
-                }
-            },
-        );
-    });
-    ui.add_space(6.0);
-    asked
+    CardAsked {
+        pages: response.clicked() && !chevron.clicked(),
+        chevron,
+        card: rect,
+    }
 }
 
 /// The amber card above the list while a tone waits for a slot. Returns
@@ -610,6 +624,8 @@ pub(crate) struct Foot {
 pub(crate) struct FootAsked {
     pub gear: Response,
     pub offer: bool,
+    /// The protection state was clicked: show the pedal's backups.
+    pub backups: bool,
 }
 
 /// The sidebar's foot: protection state on the left, an update offer when
@@ -623,12 +639,12 @@ pub(crate) fn sidebar_foot(ui: &mut Ui, foot: &Foot, update: Option<&str>) -> Fo
     );
     let y = rect.center().y;
     let left = rect.left() + 14.0;
-    match foot.icon {
-        Some(icon) => theme::paint_icon(ui, icon, Pos2::new(left + 7.0, y), 14.0, foot.mood.ink()),
-        None => theme::paint_mark(
+    // A protection icon is painted with its words, over their hover.
+    if foot.icon.is_none() {
+        theme::paint_mark(
             ui,
             Rect::from_center_size(Pos2::new(left + 7.0, y), Vec2::splat(16.0)),
-        ),
+        );
     }
     let gear_place =
         Rect::from_center_size(Pos2::new(rect.right() - 8.0 - 12.0, y), Vec2::splat(24.0));
@@ -666,16 +682,34 @@ pub(crate) fn sidebar_foot(ui: &mut Ui, foot: &Foot, update: Option<&str>) -> Fo
         theme::text_soft(),
         right - text_left,
     );
-    let hit = Rect::from_min_size(
-        Pos2::new(text_left, y - 9.0),
-        Vec2::new(text.size().x, 18.0),
+    let hit = Rect::from_min_max(
+        Pos2::new(left - 4.0, y - 11.0),
+        Pos2::new(text_left + text.size().x + 4.0, y + 11.0),
     );
-    paint_line(ui, text, text_left, y);
-    if !foot.hint.is_empty() {
-        ui.interact(hit, ui.id().with("foot-text"), Sense::hover())
-            .on_hover_text(&foot.hint);
+    // The protection state opens the backups it is about, when there is a
+    // pedal to have backups of.
+    let backups = foot.icon.is_some() && {
+        let response = ui.interact(hit, ui.id().with("foot-text"), Sense::click());
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(hit, CornerRadius::same(6), theme::raised());
+        }
+        let response = if foot.hint.is_empty() {
+            response
+        } else {
+            response.on_hover_text(format!("{}. Click for its backups", foot.hint))
+        };
+        response.clicked()
+    };
+    if let Some(icon) = foot.icon {
+        theme::paint_icon(ui, icon, Pos2::new(left + 7.0, y), 14.0, foot.mood.ink());
     }
-    FootAsked { gear, offer }
+    paint_line(ui, text, text_left, y);
+    FootAsked {
+        gear,
+        offer,
+        backups,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,8 +1242,9 @@ pub(crate) struct MiniAsked {
     pub show_sidebar: bool,
 }
 
-/// The 52-point deck the Library and Pedal pages keep the loaded preset in:
-/// slot, name, Edited, its chain in colours, the snapshot, Save and Edit.
+/// The 52-point deck the pedal's own pages keep the loaded preset in: slot,
+/// name, Edited, its chain in colours, the snapshot, Save and the way back to
+/// the preset (Esc).
 pub(crate) fn mini_deck(ui: &mut Ui, deck: &MiniDeck) -> MiniAsked {
     let mut asked = MiniAsked::default();
     let full = ui.max_rect();
@@ -1220,10 +1255,11 @@ pub(crate) fn mini_deck(ui: &mut Ui, deck: &MiniDeck) -> MiniAsked {
                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                asked.edit = theme::Button::new("Edit")
+                asked.edit = theme::Button::new("Back to the preset")
                     .ghost()
                     .small()
-                    .icon(Icon::ArrowUpRight)
+                    .icon(Icon::ArrowLeft)
+                    .hint("Esc")
                     .show(ui)
                     .on_hover_text("Edit the loaded preset")
                     .clicked();
@@ -1381,6 +1417,18 @@ pub(crate) fn settings_popup() -> egui::Id {
     egui::Id::new("tonepush-settings")
 }
 
+/// The device card's chevron: there is one card, so its id is fixed.
+fn device_card_chevron() -> egui::Id {
+    egui::Id::new("tonepush-device-card-menu")
+}
+
+/// The menu the device card's chevron opens: the pedal's pages. The
+/// screenshots open it.
+#[cfg(test)]
+pub(crate) fn device_card_menu() -> egui::Id {
+    egui::Id::new("tonepush-device-card-menu").with("popup")
+}
+
 /// "14:02" when it was today, "4 Oct" before; and whether it was today.
 pub(crate) fn clock(time: std::time::SystemTime) -> Option<(String, bool)> {
     let stamp = jiff::Timestamp::try_from(time).ok()?;
@@ -1491,22 +1539,22 @@ impl App {
                         ui.set_clip_rect(body);
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
                         self.device_card_ui(ui);
-                        if let Some(page) = page_switch(ui, self.page) {
-                            self.go_to(page);
-                        }
                         if self.pro_active() {
                             let sending = self.sending.as_ref().map(|sending| sending.name.clone());
+                            let on_pages = self.page == Page::Pedal;
                             let picked = self.pro.sidebar(
                                 ui,
                                 &self.library_lookup,
                                 &mut self.config,
                                 sending.as_deref(),
+                                on_pages,
                             );
                             match picked {
                                 Some(crate::pro::Picked::Slot(slot)) => {
                                     self.finish_sending(slot as i64);
                                 }
                                 Some(crate::pro::Picked::Cancel) => self.sending = None,
+                                Some(crate::pro::Picked::Back) => self.go_to(Page::Edit),
                                 None => {}
                             }
                         } else {
@@ -1567,11 +1615,14 @@ impl App {
                 },
             }
         };
-        let response = device_card(ui, &card);
-        let mut pedal_page = false;
+        let chosen = self.page == Page::Pedal;
+        let asked = device_card(ui, &card, chosen);
+        let pages = self.pedal_pages();
+        let mut opened = None;
         let mut let_go = false;
         let mut look = false;
-        egui::Popup::menu(&response)
+        egui::Popup::menu(&asked.chevron)
+            .anchor(asked.card)
             .align(egui::RectAlign::BOTTOM_START)
             .gap(4.0)
             .show(|ui| {
@@ -1585,11 +1636,17 @@ impl App {
                         "not connected"
                     }),
                 );
-                if card.online {
-                    pedal_page =
-                        theme::menu_item(ui, Some(Icon::HardDrive), "Open the pedal page", None)
-                            .clicked();
+                if card.online && !pages.is_empty() {
+                    for (index, page) in pages.iter().enumerate() {
+                        if theme::menu_item(ui, Some(page.icon), &page.label, page.count.as_deref())
+                            .clicked()
+                        {
+                            opened = Some(index);
+                        }
+                    }
                     theme::menu_separator(ui);
+                }
+                if card.online {
                     let_go = theme::menu_item(ui, Some(Icon::Power), "Let the pedal go", None)
                         .on_hover_text("Disconnect, so another editor can use the pedal")
                         .clicked();
@@ -1598,14 +1655,51 @@ impl App {
                         theme::menu_item(ui, Some(Icon::Usb), "Look for a pedal", None).clicked();
                 }
             });
-        if pedal_page {
+        if asked.pages && card.online {
             self.go_to(Page::Pedal);
+        }
+        if let Some(index) = opened {
+            self.open_pedal_page(index);
         }
         if let_go {
             self.let_go();
         }
         if look {
             self.look_for_pedal();
+        }
+    }
+
+    /// The pedal's own pages, as the device card's menu lists them: their
+    /// names, icons and counts.
+    pub(crate) fn pedal_pages(&self) -> Vec<PedalPage> {
+        if self.pro_active() {
+            return self.pro.pages();
+        }
+        crate::pages::PedalTab::ALL
+            .iter()
+            .map(|tab| PedalPage {
+                label: tab.label().to_owned(),
+                icon: tab.icon(),
+                count: match tab {
+                    crate::pages::PedalTab::Irs => Some(self.irs.len().to_string()),
+                    crate::pages::PedalTab::Favourites => Some(self.favourites.len().to_string()),
+                    _ => None,
+                },
+            })
+            .collect()
+    }
+
+    /// Show one of the pedal's own pages, by its place in that list.
+    pub(crate) fn open_pedal_page(&mut self, index: usize) {
+        if self.pro_active() {
+            self.pro.open_page(index);
+        } else if let Some(tab) = crate::pages::PedalTab::ALL.get(index) {
+            self.pedal_tab = *tab;
+        }
+        if self.page == Page::Pedal {
+            self.read_pedal_page();
+        } else {
+            self.go_to(Page::Pedal);
         }
     }
 
@@ -1826,10 +1920,19 @@ impl App {
             self.config.toggle_favorite(self.setlist, index);
         }
         if let Some(index) = load {
-            // Selecting a preset throws away whatever is in the edit buffer.
-            // That is the device's rule, not ours, and it costs a person their
-            // unsaved work in silence, so it asks first.
-            self.request_preset(index);
+            // What is clicked in the sidebar is what the right side shows: a
+            // preset clicked while the pedal's own pages show brings the
+            // editor back, and the loaded one is not loaded again for it.
+            let back = self.page == Page::Pedal;
+            if back {
+                self.go_to(Page::Edit);
+            }
+            if !(back && index == self.preset_index) {
+                // Selecting a preset throws away whatever is in the edit
+                // buffer. That is the device's rule, not ours, and it costs a
+                // person their unsaved work in silence, so it asks first.
+                self.request_preset(index);
+            }
         }
         if let Some((index, action)) = action {
             self.row_action(index, action);
@@ -1900,6 +2003,10 @@ impl App {
         let asked = sidebar_foot(ui, &foot, update.as_deref());
         if asked.offer {
             egui::Popup::toggle_id(ui.ctx(), settings_popup());
+        }
+        if asked.backups && self.pedal_online() {
+            // Backups lead the pedal's pages on both families.
+            self.open_pedal_page(0);
         }
         egui::Popup::from_toggle_button_response(&asked.gear)
             .id(settings_popup())

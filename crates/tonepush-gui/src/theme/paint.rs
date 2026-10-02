@@ -108,6 +108,42 @@ pub fn gradient_rect(painter: &Painter, rect: Rect, radius: f32, stops: &[Stop])
     painter.add(Shape::mesh(mesh));
 }
 
+/// Fill a square-cornered rectangle with a horizontal gradient: a row that
+/// fades out at its right edge while there is more of it.
+pub fn gradient_rect_horizontal(painter: &Painter, rect: Rect, stops: &[Stop]) {
+    if rect.height() <= 0.0 || rect.width() <= 0.0 || stops.is_empty() {
+        return;
+    }
+    let mut columns: Vec<f32> = stops
+        .iter()
+        .map(|&(t, _)| rect.left() + rect.width() * t.clamp(0.0, 1.0))
+        .collect();
+    columns.push(rect.left());
+    columns.push(rect.right());
+    columns.sort_by(f32::total_cmp);
+    columns.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+    let mut mesh = Mesh::default();
+    for x in &columns {
+        let colour = colour_at(stops, (*x - rect.left()) / rect.width());
+        mesh.vertices.push(Vertex {
+            pos: Pos2::new(*x, rect.top()),
+            uv: WHITE_UV,
+            color: colour,
+        });
+        mesh.vertices.push(Vertex {
+            pos: Pos2::new(*x, rect.bottom()),
+            uv: WHITE_UV,
+            color: colour,
+        });
+    }
+    for column in 0..columns.len().saturating_sub(1) {
+        let i = (column * 2) as u32;
+        mesh.add_triangle(i, i + 1, i + 2);
+        mesh.add_triangle(i + 1, i + 3, i + 2);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
 /// Fill a circle with a vertical gradient (a knob's face).
 pub fn gradient_circle(
     painter: &Painter,

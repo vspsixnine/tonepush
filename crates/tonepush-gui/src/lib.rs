@@ -20,6 +20,7 @@ mod devices;
 mod eq;
 mod floor;
 pub mod library;
+mod library_pane;
 mod library_view;
 mod pages;
 mod pane;
@@ -317,9 +318,13 @@ pub struct App {
     clipboard: Option<(String, Vec<u8>)>,
     /// Where the bytes should go once `Cmd::CopyPreset` answers.
     pending_copy: CopyTarget,
-    /// Which page the window shows: the loaded preset, the library, or the
-    /// pedal itself.
+    /// What the main column shows: the loaded preset, or the pedal itself.
     page: shell::Page,
+    /// The library pane under the editor: its splitter, whether it is open
+    /// over the pedal's pages, and the Cloud's Everyone or Mine.
+    pane: library_pane::PaneState,
+    /// The search in Cloud, Mine: what this library published.
+    mine_search: String,
     /// The connect page's watch on USB for a pedal plugged in later.
     watch: connect::Watch,
     /// Which tab of the HX's page is open.
@@ -486,6 +491,15 @@ pub struct App {
     lib_entries: Vec<LibEntry>,
     library_lookup: LibraryLookup,
     lib_selected: Option<usize>,
+    /// The selection is the loaded preset's tone, chosen by nothing but its
+    /// being loaded, so it moves when another preset loads. A click, or
+    /// anything else that chooses a tone, ends it.
+    lib_follows: bool,
+    /// Scroll the table to the chosen row on its next frame.
+    lib_reveal: bool,
+    /// The library's rows as the table last drew them, sorted and filtered:
+    /// what the arrow keys step through.
+    lib_order: Vec<usize>,
     /// The metadata draft for the selected entry, saved as it is edited.
     lib_draft: library::Meta,
     lib_tag_filter: Option<String>,
@@ -625,6 +639,9 @@ enum CopyTarget {
     File(std::path::PathBuf),
     /// Into the library as the byte-exact native preset document.
     Library,
+    /// Into the library as the next version of the tone of its name: the
+    /// loaded preset's edits, kept without saving them to the pedal.
+    LibraryVersion,
 }
 
 /// A column of the library table, and what it sorts by.
@@ -956,7 +973,7 @@ fn format_count(count: u64) -> String {
 /// pedal's own libraries - impulse responses, favourite blocks - are not here
 /// at all. They belong to the device, and they live behind the device's button,
 /// which is the distinction HX Edit's tabs blur.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryView {
     Tones,
     Setlists,
@@ -1279,6 +1296,8 @@ impl App {
             pending_copy: CopyTarget::Clipboard,
             dirty: false,
             page: shell::Page::Edit,
+            pane: library_pane::PaneState::default(),
+            mine_search: String::new(),
             watch: connect::Watch::default(),
             pedal_tab: pages::PedalTab::Backups,
             sidebar_hidden: false,
@@ -1357,6 +1376,9 @@ impl App {
             lib_entries: Vec::new(),
             library_lookup: LibraryLookup::default(),
             lib_selected: None,
+            lib_follows: false,
+            lib_reveal: false,
+            lib_order: Vec::new(),
             lib_draft: library::Meta::default(),
             lib_tag_filter: None,
             lib_chosen: Default::default(),
@@ -1680,6 +1702,7 @@ impl App {
                             let origin = self.origin();
                             self.keep_tone(&name, "hxpreset", &blob, origin);
                         }
+                        CopyTarget::LibraryVersion => self.keep_version(&name, &blob),
                     }
                 }
                 Ok(Evt::Irs(slots)) => self.irs = slots,
@@ -1948,7 +1971,7 @@ impl App {
         } else {
             self.shortcuts(&ctx);
         }
-        self.frame_shortcuts(&ctx);
+        self.frame_shortcuts(&ctx, tier);
         self.observe_library_device();
         self.finish_extraction();
         // Both arrive from a thread and neither belongs to any one page: one
@@ -1965,29 +1988,34 @@ impl App {
         }
 
         // The sidebar claims the left edge first, so it runs the window's
-        // full height; each page then lays out what is left.
+        // full height; each page then lays out what is left. The library is
+        // a pane along the bottom of what is left, under the board and above
+        // the block pane, which gives it the height it takes.
         self.sidebar(ui, tier);
         match self.page {
-            shell::Page::Edit if self.shows_connect() => self.connect_page(ui, tier),
+            shell::Page::Edit if self.shows_connect() => {
+                self.library_pane(ui, tier);
+                self.connect_page(ui, tier);
+            }
             shell::Page::Edit => {
                 self.deck(ui, tier);
                 if pro_active {
                     let note = self.pro_library_note();
-                    self.pro.body(ui, tier, &note);
+                    self.pro.body_top(ui, tier);
+                    self.library_pane(ui, tier);
+                    self.pro.body_pane(ui, tier, &note);
                 } else {
                     self.signal_chain(ui);
-                    if self.shows_floor(tier) {
+                    self.library_pane(ui, tier);
+                    if self.shows_floor(tier, ui.available_rect_before_wrap().height()) {
                         self.floor(ui, tier);
                     }
                     self.pane(ui, tier);
                 }
             }
-            shell::Page::Library => {
-                self.small_deck(ui);
-                self.library_page(ui, tier);
-            }
             shell::Page::Pedal => {
                 self.small_deck(ui);
+                self.library_pane(ui, tier);
                 if pro_active {
                     self.pro.pedal_page(ui, tier);
                 } else {
@@ -2018,14 +2046,23 @@ impl App {
     }
 
     /// The window's own keys: Ctrl+B puts the sidebar away and brings it
-    /// back. Skipped while a field has the keyboard.
-    fn frame_shortcuts(&mut self, ctx: &egui::Context) {
+    /// back, the library's keys fold it and open its tabs, and Esc on the
+    /// pedal's own pages goes back to the preset. Skipped while a field has
+    /// the keyboard.
+    fn frame_shortcuts(&mut self, ctx: &egui::Context, tier: theme::Tier) {
         if ctx.memory(|m| m.focused().is_some()) {
             return;
         }
         let toggle = egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::B);
         if ctx.input_mut(|input| input.consume_shortcut(&toggle)) {
             self.sidebar_hidden = !self.sidebar_hidden;
+        }
+        self.pane_shortcuts(ctx, tier);
+        if self.page == shell::Page::Pedal
+            && !ctx.any_popup_open()
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.go_to(shell::Page::Edit);
         }
     }
 
@@ -2590,6 +2627,48 @@ impl App {
         }
     }
 
+    /// Keep the loaded preset as it sounds now, edits and all, as the next
+    /// version of its tone in the library, without saving it to the pedal.
+    /// The inspector offers it as "Keep as v3" for an HX preset with changes;
+    /// a StompStation PRO hands out only what it has saved.
+    pub(crate) fn keep_edit_as_version(&mut self) {
+        if self.pro_active() || self.preset_index < 0 {
+            return;
+        }
+        self.pending_copy = CopyTarget::LibraryVersion;
+        self.send(Cmd::CopyPreset);
+    }
+
+    /// The bytes of the loaded preset, arrived for "Keep as v3": the next
+    /// version of the library's tone of its name, or a tone of its own when
+    /// the library has none.
+    fn keep_version(&mut self, name: &str, blob: &[u8]) {
+        let origin = self.origin();
+        let Some(old) = self
+            .loaded_tone()
+            .and_then(|index| self.lib_entries.get(index))
+            .map(|entry| (entry.hash.clone(), entry.name.clone()))
+        else {
+            return self.keep_tone(name, "hxpreset", blob, origin);
+        };
+        let kept = library::store(&old.1, blob, "hxpreset").and_then(|hash| {
+            if hash != old.0 {
+                library::override_with(&old.0, &hash, &old.1)?;
+                if let Some(origin) = &origin {
+                    library::set_pedal(&hash, &origin.name, &origin.firmware)?;
+                }
+            }
+            Ok(())
+        });
+        match kept {
+            Ok(()) => {
+                self.refresh_library();
+                self.note(format!("kept {} as its next version", old.1));
+            }
+            Err(why) => self.note(why),
+        }
+    }
+
     /// Record the pedal a tone came from, when the library does not know it
     /// yet.
     fn note_origin(&mut self, hash: &str, origin: Option<&devices::Pedal>) {
@@ -3022,7 +3101,7 @@ impl App {
                             self.select_setlist_entry(i);
                         }
                         // The setlist just named is the thing to look at.
-                        self.go_to(shell::Page::Library);
+                        self.open_library(LibraryView::Setlists, theme::Tier::now(ctx));
                     }
                     Err(why) => {
                         self.note(why);
@@ -3437,6 +3516,7 @@ impl App {
     /// Load a row's metadata into the editable draft.
     fn select_lib_entry(&mut self, i: usize) {
         if let Some(e) = self.lib_entries.get(i) {
+            self.lib_follows = false;
             self.lib_selected = Some(i);
             self.lib_draft = e.meta.clone();
             self.lib_genres_buf = e.meta.genres.join(", ");
@@ -4006,6 +4086,8 @@ impl App {
             } else {
                 "No published tones match this search."
             },
+            row_height: library_pane::TABLE_ROW,
+            header_height: library_pane::TABLE_HEADER,
             ..Default::default()
         };
         for &row in &source_rows {
@@ -4412,6 +4494,8 @@ impl App {
             nothing_yet: "No tones yet. Click",
             nothing_icon: Some(theme::Icon::Computer),
             nothing_after_icon: "beside a preset to save it.",
+            row_height: library_pane::TABLE_ROW,
+            header_height: library_pane::TABLE_HEADER,
             ..Default::default()
         };
         for &i in &rows {
@@ -4445,8 +4529,11 @@ impl App {
             grid.chosen.push(self.lib_chosen.contains(&entry.hash));
         }
 
+        // With nothing chosen, the loaded preset's tone reads as chosen: it
+        // is what the details show.
         grid.selected = self
             .lib_selected
+            .or_else(|| self.loaded_tone())
             .and_then(|selected| rows.iter().position(|&row| row == selected));
 
         if let Some((hash, column, draft)) = self.lib_editing.clone() {
@@ -4461,6 +4548,12 @@ impl App {
         // disagree with what is on screen.
         let order = grid.sort_rows();
         let rows: Vec<usize> = order.iter().map(|&row| rows[row]).collect();
+        if std::mem::take(&mut self.lib_reveal) {
+            grid.reveal = grid.selected;
+        }
+        // The rows are self.lib_order from here on: the arrow keys step
+        // through them as they are drawn.
+        self.lib_order.clone_from(&rows);
 
         let did = table::show(ui, "library", &mut grid);
         self.apply_column_visibility(did.column_visibility);
@@ -7189,7 +7282,7 @@ mod tests {
         events.send(Evt::Failed("no HX found".into())).unwrap();
         app.drain_events();
         app.pro.demo_looked();
-        app.go_to(shell::Page::Library);
+        app.go_to(shell::Page::Pedal);
         app.on_listed(&stomp, now);
         assert!(
             cmds.try_recv().is_err(),

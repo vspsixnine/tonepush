@@ -1557,6 +1557,50 @@ fn menu_row(
     response
 }
 
+/// Keys as small raised caps, 18 points tall, the way the design writes a
+/// shortcut beside what it does: "Ctrl" "L". Returns their width.
+pub fn paint_keycaps(ui: &Ui, left: f32, y: f32, keys: &[&str], enabled: bool) -> f32 {
+    let ink = if enabled { text_soft() } else { faint() };
+    let mut x = left;
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            x += 3.0;
+        }
+        let galley = layout(ui, key, semibold(10.5), ink);
+        let width = galley.size().x + 10.0;
+        let rect = Rect::from_min_size(Pos2::new(x, y - 9.0), Vec2::new(width.max(18.0), 18.0));
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(4),
+            raised(),
+            Stroke::new(1.0, line_strong()),
+            egui::StrokeKind::Inside,
+        );
+        let text_width = galley.size().x;
+        centred_galley(ui, galley, rect.center().x - text_width / 2.0, y);
+        x = rect.right();
+    }
+    x - left
+}
+
+/// How wide those caps are.
+pub fn keycaps_width(ui: &Ui, keys: &[&str]) -> f32 {
+    keys.iter()
+        .map(|key| (layout(ui, key, semibold(10.5), text()).size().x + 10.0).max(18.0))
+        .sum::<f32>()
+        + 3.0 * keys.len().saturating_sub(1) as f32
+}
+
+/// Keys as caps, allocated in a row.
+pub fn keycaps(ui: &mut Ui, keys: &[&str]) -> Response {
+    let width = keycaps_width(ui, keys);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        paint_keycaps(ui, rect.left(), rect.center().y, keys, true);
+    }
+    response
+}
+
 /// A hairline between groups of menu rows.
 pub fn menu_separator(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 13.0), Sense::hover());

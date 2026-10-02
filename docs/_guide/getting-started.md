@@ -65,18 +65,28 @@ later, or one another editor lets go of, connects by itself. A pedal you let go
 of in TonePush is left alone until you unplug it or press **Look again**, which
 looks at once. Your library is one click away.
 
-Once a pedal is connected, the sidebar on the left is the pedal: its name and
-firmware at the top, then its presets in its own banks. Across the top runs the
-loaded preset, with what state it is in, its snapshots, the tempo, undo, redo
-and Save. The switch at the top of the sidebar turns the rest of the window
-into one of three pages:
+Once a pedal is connected, the sidebar on the left is the pedal: its card at
+the top, with its name and firmware, then its presets in its own banks. Across
+the top runs the loaded preset, with what state it is in, its snapshots, the
+tempo, undo, redo and Save. Under it are the editor and, along the bottom, your
+library:
 
-- **Edit**, the loaded preset: the signal chain across the top, the selected
-  block's knobs under it, and the pedal's footswitches and expression pedals
-  along the bottom.
-- **Library**, your tones, setlists and the TonePush Cloud.
-- **Pedal**, the pedal itself: its backups, impulse responses, favourite
-  blocks, global EQ, settings and an activity log.
+- **The editor** is the loaded preset: the signal chain across the top, the
+  selected block's knobs under it, and, when the library leaves room for them,
+  the pedal's footswitches and expression pedals.
+- **The library** has three tabs: **Tones**, **Setlists** and **Cloud**
+  (TonePush's tones, everyone's or the ones you published). Drag its top edge
+  to give it more or less of the window, or double-click the edge to fold it to
+  its tabs. Ctrl+L (Cmd+L on macOS) folds it and opens it again, Ctrl+1, Ctrl+2
+  and Ctrl+3 open its tabs, and Ctrl+F searches the open one. With nothing
+  chosen, its details are the loaded preset's tone. TonePush remembers its
+  height, and whether it is folded, for each size of window. When it leaves
+  the editor little room, the block's knobs go onto one row that scrolls
+  sideways, and then the editor keeps the block's name alone.
+- **The pedal's own pages**: click the pedal's card for its backups, impulse
+  responses, favourite blocks, global EQ, settings and an activity log, or
+  choose one from the menu its arrows open. **Back to the preset** (Esc)
+  returns to the editor. The library starts folded there, ready to open.
 
 Ctrl+B (Cmd+B on macOS) hides the sidebar when the page needs the width.
 

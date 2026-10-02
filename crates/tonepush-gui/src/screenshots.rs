@@ -104,10 +104,14 @@ enum Scene {
     ProReadOnly,
     /// TonePush's public tones for the HX Stomp, in the library's Cloud.
     HxCloud,
+    /// The HX Stomp's page, the device card's menu of its pages open.
+    HxPages,
+    /// A StompStation PRO on 2.0.10, on its NAM amps, the menu open.
+    ProPages,
 }
 
 impl Scene {
-    const ALL: [Scene; 33] = [
+    const ALL: [Scene; 35] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -141,6 +145,8 @@ impl Scene {
         Scene::ProRouterPicker,
         Scene::ProReadOnly,
         Scene::HxCloud,
+        Scene::HxPages,
+        Scene::ProPages,
     ];
 
     fn name(self) -> &'static str {
@@ -178,6 +184,8 @@ impl Scene {
             Scene::ProRouterPicker => "pro-router-picker",
             Scene::ProReadOnly => "pro-read-only",
             Scene::HxCloud => "hx-cloud",
+            Scene::HxPages => "hx-pages",
+            Scene::ProPages => "pro-pages",
         }
     }
 
@@ -185,22 +193,32 @@ impl Scene {
         // Nothing goes to TonePush's site from a screenshot.
         app.cloud_search_due = None;
         app.cloud_check = None;
+        // Signed in by name only, an invented one: there is no token, so
+        // nothing could reach an account even if the site were there.
+        app.config.account = Some("Noa Calder".to_owned());
         library(app);
         match self {
-            Scene::HxEdit | Scene::Settings => hx_stomp(app),
+            Scene::HxEdit => {
+                // The design's main screen: the library on every pedal's
+                // tones, with nothing chosen, so the details are the loaded
+                // preset's, scrolled to its row.
+                hx_stomp(app);
+                app.library_device_filter = None;
+                app.lib_reveal = true;
+            }
+            Scene::Settings => hx_stomp(app),
             Scene::ProEdit => pro(app),
             Scene::SetlistConfirm | Scene::HxSetlists => {
                 hx_stomp(app);
-                app.page = shell::Page::Library;
                 app.lib_showing = crate::LibraryView::Setlists;
                 app.select_setlist_entry(0);
+                tall_pane(app);
                 if self == Scene::SetlistConfirm {
                     app.confirm_push = Some(0);
                 }
             }
             Scene::HxLibrary => {
                 hx_stomp(app);
-                app.page = shell::Page::Library;
                 // Every pedal's tones, so the markers of each show.
                 app.library_device_filter = None;
                 let sending = app
@@ -217,14 +235,20 @@ impl Scene {
             Scene::HxCloud => {
                 hx_stomp(app);
                 cloud_feed(app);
-                app.page = shell::Page::Library;
                 app.lib_showing = crate::LibraryView::Cloud;
                 app.cloud_selected = Some(0);
             }
-            Scene::HxPedal => {
+            Scene::HxPedal | Scene::HxPages => {
                 hx_stomp(app);
                 backups_history(app);
                 app.page = shell::Page::Pedal;
+            }
+            Scene::ProPages => {
+                use crate::pro::demo::DemoChain;
+                pro(app);
+                app.pro.show_demo_router(DemoChain::Default);
+                app.page = shell::Page::Pedal;
+                app.pro.demo_library(false);
             }
             Scene::HxPedalIrs | Scene::HxPedalEq | Scene::HxPedalSettings => {
                 hx_stomp(app);
@@ -325,6 +349,24 @@ impl Scene {
                 app.catalog = None;
             }
         }
+        if app.pro_active() {
+            kept_from_pro(app);
+        }
+    }
+}
+
+/// The tone loaded on the StompStation PRO was kept from it, so it carries
+/// the firmware the scene's pedal runs: 1.5.12, or 2.0.10 with the chain.
+fn kept_from_pro(app: &mut App) {
+    let firmware = app.pro.firmware().to_owned();
+    if let Some(entry) = app
+        .lib_entries
+        .iter_mut()
+        .find(|entry| entry.name == "Velvet Drive")
+    {
+        entry.marker = crate::devices::Marker::of_device("StompStation PRO", &firmware);
+        entry.firmware.clone_from(&firmware);
+        entry.meta.firmware = firmware;
     }
 }
 
@@ -435,6 +477,20 @@ fn two_minutes_past_two() -> std::time::SystemTime {
         .expect("today at 14:02 is a time")
 }
 
+/// The library pane dragged up toward the board, as the design draws the
+/// setlists: the block pane keeps its head.
+fn tall_pane(app: &mut App) {
+    for (size, height) in [("small", 300.0), ("medium", 345.0), ("large", 760.0)] {
+        app.config.library_pane.insert(
+            size.to_owned(),
+            crate::config::PaneSize {
+                height,
+                folded: false,
+            },
+        );
+    }
+}
+
 /// The StompStation PRO, with the library holding three of its presets.
 fn pro(app: &mut App) {
     app.pro.show_demo();
@@ -483,6 +539,9 @@ impl Demo {
         root.set_clip_rect(window);
         if self.scene == Scene::Settings {
             egui::Popup::open_id(ui.ctx(), shell::settings_popup());
+        }
+        if matches!(self.scene, Scene::HxPages | Scene::ProPages) {
+            egui::Popup::open_id(ui.ctx(), shell::device_card_menu());
         }
         app.draw(&mut root);
     }
@@ -709,6 +768,32 @@ fn library(app: &mut App) {
         .collect();
     app.library_lookup.indexed = app.lib_entries.iter().map(|e| e.hash.clone()).collect();
     app.library_lookup.reindex(&app.lib_entries);
+
+    // Every HX tone gets its publishable companion, as the library writes
+    // one, and TonePush answers that the design's published tones are there.
+    const PUBLISHED: [&str; 7] = [
+        "Big Room Lead",
+        "Brown Lead",
+        "Dream Pop",
+        "Glass Clean",
+        "Plexi Crunch",
+        "Velvet Drive",
+        "Worship Pad",
+    ];
+    let mut published = std::collections::BTreeSet::new();
+    for entry in &app.lib_entries {
+        if !entry.pro {
+            let companion = format!("{{\"data\":{{\"meta\":{{\"name\":\"{}\"}}}}}}", entry.name);
+            crate::library::attach_portable(&entry.hash, &companion)
+                .expect("the scratch library takes a publishable copy");
+        }
+        if PUBLISHED.contains(&entry.name.as_str()) {
+            if let Some(portable) = crate::library::portable_hash(&entry.hash) {
+                published.insert(portable);
+            }
+        }
+    }
+    app.cloud_files = Some(published);
 
     // The setlists are written against the pedal's own presets, so they are
     // made with the HX Stomp's fixture; see `setlists`.

@@ -64,3 +64,42 @@ Scenes: `hx-library` (every pedal's tones, at the three sizes in both themes),
   digit (3.81 is 3.8, patch 1), so 3.81 is 3.80 too.
 - A TonePush PRO tone that lists no firmware keeps the family alone in its
   marker and plays on any PRO.
+
+## Stage 2: the frame
+
+The Edit · Library · Pedal switch is gone. The library is a pane along the
+bottom of the editor with three tabs (Tones, Setlists, Cloud, each with its
+count), the Cloud's Everyone and Mine beside them, and the open tab's search,
+filter, pedal scope, columns and account at the right. Its top edge drags it
+taller or shorter, a double-click or Ctrl L folds it to its tabs, Ctrl 1, 2 and
+3 open its tabs and Ctrl F searches the open one. It opens at the design's
+heights (186, 232 and 512 points for the three sizes of window), and its
+height and whether it is folded are kept for each size. With nothing chosen
+the details are the loaded preset's tone, in full, and the table scrolls to
+its row. The block pane gives way as the library grows: the face on one row
+that scrolls sideways, then the block's head alone; the footswitches show
+when the library is folded or leaves room for them.
+
+The pedal's own pages open from its card at the top of the sidebar, or from
+the menu its arrows open, which lists them with their counts and ends with
+"Let the pedal go". "Back to the preset" (Esc) returns to the editor, and the
+library starts folded there with its key beside it. The connect page scrolls
+when the pane leaves it short.
+
+Scenes: `hx-edit` (the main screen, at the three sizes in both themes,
+against sheet 01), `hx-library` (the three sizes in both themes), `hx-cloud`,
+`hx-setlists`, `hx-pedal` and `hx-pages` (sheet 21, the card's menu open),
+`pro-edit`, `pro-pages` (sheet 22, a PRO on 2.0.10 on its NAM amps) and
+`no-device`, at 1280 × 760. Their `before/` is the scene of the same name, and
+`before/hx-library` for `hx-cloud`.
+
+- The pane's account is signed in under an invented name ("Noa Calder") and
+  no token, so nothing could reach an account.
+- At the middle size the Cloud tab shows the account as an icon, as the
+  design does, so the tabs keep their room; any tool that still does not fit
+  narrows the search, which is left out below 96 points.
+- The design's largest window also starts with the Version and Changed
+  columns; the table keeps its existing first columns, and both are on its
+  columns menu.
+- The Cloud table keeps its existing columns until stage 6 restyles TonePush's
+  tones (By and Downloads in place of Character and Rating).

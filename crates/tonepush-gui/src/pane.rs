@@ -222,7 +222,29 @@ pub(crate) struct Fit<'a> {
     /// Drawn at its natural width rather than the whole `width`.
     pub natural: bool,
     pub fill: Color32,
+    /// Every control on one row, without the chips that say what drives
+    /// each: the face the block pane keeps when the library pane leaves it
+    /// no room for more, scrolled sideways.
+    pub one_row: bool,
 }
+
+/// How much of the block pane the library leaves room for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Room {
+    /// The head and the whole face, in balanced rows.
+    Face,
+    /// A smaller head and the face on one row that scrolls sideways.
+    OneRow,
+    /// The head alone, with its name and its lens switch.
+    Head,
+}
+
+/// A one-row face's height: 44-point knobs, their readings and names, the
+/// card's padding. No chips.
+pub(crate) const ONE_ROW_FACE: f32 = 44.0 + CELL_TEXT - 22.0 + 24.0;
+/// The block's head, and the smaller one over a one-row face.
+pub(crate) const HEAD: f32 = 64.0;
+pub(crate) const SMALL_HEAD: f32 = 54.0;
 
 /// The cab's controls are typed into under their own key, so a value typed
 /// into the cab's first knob is not shown in the amp's as well.
@@ -330,17 +352,37 @@ impl App {
         let colour = self.block_colour(block);
         let groups = self.face_groups(block);
         let counts: Vec<usize> = groups.iter().map(|group| group.controls.len()).collect();
-        let (knob, rows) = fit_face(&counts, effect, fit.width, fit.height, fit.sizes);
+        let (knob, rows) = if fit.one_row {
+            let knob = fit.sizes.first().copied().unwrap_or(44.0);
+            (knob, counts.iter().map(|count| vec![*count]).collect())
+        } else {
+            fit_face(&counts, effect, fit.width, fit.height, fit.sizes)
+        };
         let cell = knob + 26.0;
         let lead_width = if effect { cell + 17.0 } else { 0.0 };
         let widest = rows.iter().flatten().copied().max().unwrap_or(0);
-        let natural = 22.0 + lead_width + widest as f32 * cell;
-        let outer = if fit.natural {
+        let groups_shown = groups
+            .iter()
+            .filter(|group| !group.controls.is_empty())
+            .count();
+        let natural = if fit.one_row {
+            22.0 + lead_width
+                + counts.iter().sum::<usize>() as f32 * cell
+                + groups_shown.saturating_sub(1) as f32 * 17.0
+        } else {
+            22.0 + lead_width + widest as f32 * cell
+        };
+        let outer = if fit.natural || fit.one_row {
             natural.min(fit.width)
         } else {
             fit.width
         };
-        let body_height = face_height(knob, &rows) - 24.0 - ROW_GAP;
+        let chips = !fit.one_row;
+        let body_height = if fit.one_row {
+            knob + CELL_TEXT - 22.0
+        } else {
+            face_height(knob, &rows) - 24.0 - ROW_GAP
+        };
 
         let bypass: Option<BypassView> = effect.then(|| self.bypass_view(position));
         let light = self.bypass_light(block);
@@ -366,15 +408,48 @@ impl App {
                 ui.set_width(outer - 22.0);
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
-                    if let Some(view) = &bypass {
-                        bypass_cell(ui, view, (knob, cell), light, &bypass_tags, &mut asked);
+                    let divider = |ui: &mut Ui| {
                         let (line, _) =
                             ui.allocate_exact_size(Vec2::new(17.0, body_height), Sense::hover());
                         ui.painter().vline(
                             line.center().x,
-                            (line.top() + 4.0)..=(line.bottom() - 24.0).max(line.top() + 4.0),
+                            (line.top() + 4.0)
+                                ..=(line.bottom() - if chips { 24.0 } else { 6.0 })
+                                    .max(line.top() + 4.0),
                             Stroke::new(1.0, theme::line()),
                         );
+                    };
+                    if let Some(view) = &bypass {
+                        let tags: &[TagSpec] = if chips { &bypass_tags } else { &[] };
+                        bypass_cell(ui, view, (knob, cell), light, tags, chips, &mut asked);
+                        divider(ui);
+                    }
+                    if !chips {
+                        // One row: the groups side by side, a rule between.
+                        let mut first = true;
+                        for group in &groups {
+                            if group.controls.is_empty() {
+                                continue;
+                            }
+                            if !first {
+                                divider(ui);
+                            }
+                            first = false;
+                            for control in &group.controls {
+                                control_cell(
+                                    ui,
+                                    catalog.as_ref(),
+                                    (position, group.paired),
+                                    control,
+                                    (knob, cell),
+                                    colour,
+                                    draft.as_ref(),
+                                    false,
+                                    &mut asked,
+                                );
+                            }
+                        }
+                        return;
                     }
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(0.0, ROW_GAP);
@@ -400,6 +475,7 @@ impl App {
                                             (knob, cell),
                                             colour,
                                             draft.as_ref(),
+                                            true,
                                             &mut asked,
                                         );
                                     }
@@ -503,9 +579,11 @@ fn bypass_cell(
     (knob, cell): (f32, f32),
     light: Color32,
     tags: &[TagSpec],
+    chips: bool,
     asked: &mut FaceAsked,
 ) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(cell, knob + CELL_TEXT), Sense::hover());
+    let height = knob + CELL_TEXT - if chips { 0.0 } else { 22.0 };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(cell, height), Sense::hover());
     let id = ui.id().with(("bypass", view.position));
     let switch = Rect::from_center_size(
         Pos2::new(rect.center().x, rect.top() + knob / 2.0),
@@ -604,11 +682,13 @@ fn control_cell(
     (knob, cell): (f32, f32),
     colour: Color32,
     draft: Option<&(i64, i64, String)>,
+    chips: bool,
     asked: &mut FaceAsked,
 ) {
     let param = &control.param;
     let key = draft_key(control.index, paired);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(cell, knob + CELL_TEXT), Sense::hover());
+    let height = knob + CELL_TEXT - if chips { 0.0 } else { 22.0 };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(cell, height), Sense::hover());
     let id = ui.id().with(("control", position, key));
     let face = Rect::from_center_size(
         Pos2::new(rect.center().x, rect.top() + knob / 2.0),
@@ -800,7 +880,8 @@ fn control_cell(
         Pos2::new(rect.left(), label.bottom() + 4.0),
         Vec2::new(cell, 18.0),
     );
-    for tagged in tag_row(ui, strip, &control.tags, ("control", position, key)) {
+    let tags: &[TagSpec] = if chips { &control.tags } else { &[] };
+    for tagged in tag_row(ui, strip, tags, ("control", position, key)) {
         if tagged.clicked() {
             egui::Popup::toggle_id(ui.ctx(), popup);
         }
@@ -1180,12 +1261,17 @@ impl App {
     }
 
     /// Whether the floor shows: on a window that is not large, under the
-    /// block, while there is a chain to drive.
-    pub(crate) fn shows_floor(&self, tier: Tier) -> bool {
+    /// block, while there is a chain to drive, and while the block pane keeps
+    /// a full face above it. With the library open on a window of 1280 by
+    /// 760 or smaller it gives way; the tiles' tags still say what each
+    /// switch drives. `room` is the height left under the library pane.
+    pub(crate) fn shows_floor(&self, tier: Tier, room: f32) -> bool {
         tier != Tier::L
             && self.browser.is_none()
             && self.lens == Lens::Block
             && !self.chain.is_empty()
+            && (self.library_folded(tier)
+                || room >= HEAD + face_height(52.0, &[vec![1]]) + crate::floor::FLOOR_HEIGHT)
     }
 
     /// Nothing loaded: say what is coming.
@@ -1226,12 +1312,22 @@ impl App {
     /// The selected block's head: its drawing in a well, its name (which
     /// opens the model browser), what kind of block it is, Change model, copy,
     /// paste and remove, and the lens switch.
-    fn block_head(&mut self, ui: &mut Ui, block: &session::Block, lens: bool) {
+    ///
+    /// `small` is the head over a one-row face: ten points shorter, its well
+    /// 36 points, so the library pane can have the room.
+    fn block_head(&mut self, ui: &mut Ui, block: &session::Block, lens: bool, small: bool) {
         let width = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 64.0), Sense::hover());
+        let height = if small { SMALL_HEAD } else { HEAD };
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
         let inner = Rect::from_min_max(
-            Pos2::new(rect.left() + 20.0, rect.top() + 14.0),
-            Pos2::new(rect.right() - 16.0, rect.bottom() - 10.0),
+            Pos2::new(
+                rect.left() + 20.0,
+                rect.top() + if small { 10.0 } else { 14.0 },
+            ),
+            Pos2::new(
+                rect.right() - 16.0,
+                rect.bottom() - if small { 8.0 } else { 10.0 },
+            ),
         );
         let mut right = inner.right();
         if lens {
@@ -1254,7 +1350,8 @@ impl App {
 
         // The well, washed in the block's colour, with its drawing or, where
         // HX Edit's pictures are installed, the model's picture.
-        let well = Rect::from_min_size(Pos2::new(x, y - 20.0), Vec2::splat(40.0));
+        let side = if small { 36.0 } else { 40.0 };
+        let well = Rect::from_min_size(Pos2::new(x, y - side / 2.0), Vec2::splat(side));
         theme::paint::gradient_rect(
             ui.painter(),
             well,
@@ -1271,7 +1368,7 @@ impl App {
             egui::StrokeKind::Inside,
         );
         let drawing = match (effect, self.artwork(block)) {
-            (true, Some(picture)) => Some((picture, Color32::WHITE, 34.0)),
+            (true, Some(picture)) => Some((picture, Color32::WHITE, side - 6.0)),
             _ => self
                 .drawing_of(block, &category)
                 .map(|art| (art, colour, 22.0)),
@@ -1481,9 +1578,23 @@ impl App {
             return;
         };
         let pane = ui.max_rect();
-        self.block_head(ui, &block, true);
         let effect = self.is_effect(&block);
-        let side = tier == Tier::M && effect;
+        // The controls card beside the face needs the room the library pane
+        // takes, so it shows with the library folded.
+        let side = tier == Tier::M && effect && self.library_folded(tier);
+        let width = pane.width() - 40.0 - if side { 16.0 + 330.0 } else { 0.0 };
+        match self.room_for_face(&block, width, pane.height(), tier) {
+            Room::Head => {
+                self.block_head(ui, &block, true, false);
+                return;
+            }
+            Room::OneRow => {
+                self.block_head(ui, &block, true, true);
+                self.one_row_face(ui, &block, pane);
+                return;
+            }
+            Room::Face => self.block_head(ui, &block, true, false),
+        }
         egui::ScrollArea::vertical()
             .id_salt("block-lens")
             .auto_shrink([false, false])
@@ -1499,7 +1610,7 @@ impl App {
                         |ui| {
                             ui.spacing_mut().item_spacing.y = 10.0;
                             self.block_extras(ui, &block);
-                            let height = pane.height() - 64.0 - if side { 16.0 } else { 12.0 };
+                            let height = pane.height() - HEAD - 4.0;
                             self.face(
                                 ui,
                                 &block,
@@ -1509,6 +1620,7 @@ impl App {
                                     sizes: knob_sizes(tier),
                                     natural: side,
                                     fill: theme::panel(),
+                                    one_row: false,
                                 },
                             )
                         },
@@ -1527,6 +1639,77 @@ impl App {
                 });
                 ui.add_space(12.0);
             });
+    }
+
+    /// How much of the face the pane under the board has room for, once the
+    /// library pane has taken its height: the whole face in balanced rows of
+    /// the largest knobs that fit (68 down to 44 points), else one row of
+    /// 44-point knobs that scrolls sideways, else the head alone.
+    fn room_for_face(&self, block: &session::Block, width: f32, height: f32, tier: Tier) -> Room {
+        if !self.is_effect(block) || self.catalog.is_none() {
+            // A junction's or an endpoint's few controls, or the step that
+            // fetches the model data, keep the pane as it was.
+            return Room::Face;
+        }
+        let counts: Vec<usize> = self
+            .face_groups(block)
+            .iter()
+            .map(|group| group.controls.len())
+            .collect();
+        let room = height - HEAD - 4.0;
+        let (knob, rows) = fit_face(&counts, true, width, Some(room), knob_sizes(tier));
+        if face_height(knob, &rows) <= room {
+            Room::Face
+        } else if height - SMALL_HEAD >= ONE_ROW_FACE {
+            Room::OneRow
+        } else {
+            Room::Head
+        }
+    }
+
+    /// The face on one row of 44-point knobs without their chips, scrolled
+    /// sideways, fading at the right edge while there is more.
+    fn one_row_face(&mut self, ui: &mut Ui, block: &session::Block, pane: Rect) {
+        let output = ui.horizontal_top(|ui| {
+            ui.add_space(20.0);
+            let width = pane.width() - 36.0;
+            egui::ScrollArea::horizontal()
+                .id_salt("block-lens-row")
+                .max_width(width)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    self.face(
+                        ui,
+                        block,
+                        &Fit {
+                            width: f32::INFINITY,
+                            height: None,
+                            sizes: &[44.0],
+                            natural: true,
+                            fill: theme::panel(),
+                            one_row: true,
+                        },
+                    );
+                })
+        });
+        let scroll = output.inner;
+        let shown = scroll.inner_rect;
+        let more = scroll.state.offset.x + shown.width() < scroll.content_size.x - 1.0;
+        if more {
+            let fade = Rect::from_min_max(Pos2::new(shown.right() - 56.0, shown.top()), shown.max);
+            theme::paint::gradient_rect_horizontal(
+                ui.painter(),
+                fade,
+                &[(0.0, theme::alpha(theme::bg(), 0.0)), (0.78, theme::bg())],
+            );
+            theme::paint_icon(
+                ui,
+                Icon::ChevronRight,
+                Pos2::new(shown.right() - 14.0, shown.center().y),
+                16.0,
+                theme::muted(),
+            );
+        }
     }
 
     /// What a junction or an endpoint offers instead of a model to swap: how
@@ -3269,7 +3452,7 @@ impl App {
                             theme::card().show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                                self.block_head(ui, &block, false);
+                                self.block_head(ui, &block, false, false);
                                 ui.horizontal(|ui| {
                                     ui.add_space(20.0);
                                     ui.vertical(|ui| {
@@ -3284,6 +3467,7 @@ impl App {
                                                 sizes: knob_sizes(Tier::L),
                                                 natural: false,
                                                 fill: theme::bg(),
+                                                one_row: false,
                                             },
                                         );
                                     });

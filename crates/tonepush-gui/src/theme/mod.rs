@@ -893,6 +893,12 @@ icons! {
     Volume => "volume-2",
     // A tone the pedal connected cannot play.
     Ban => "ban",
+    // The library pane, folded and opened; the Cloud's Everyone and Mine.
+    PanelBottomClose => "panel-bottom-close",
+    PanelBottomOpen => "panel-bottom-open",
+    Users => "users",
+    User => "user",
+    ArrowLeft => "arrow-left",
 }
 
 impl Icon {

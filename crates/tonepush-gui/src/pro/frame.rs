@@ -19,6 +19,9 @@ pub(crate) enum Picked {
     Slot(usize),
     /// Stop sending.
     Cancel,
+    /// A preset was clicked while the pedal's own pages showed: back to the
+    /// editor.
+    Back,
 }
 
 /// A preset slot as the pedal's home screen shows it: three to a bank, 01A
@@ -114,6 +117,7 @@ impl Panel {
         lookup: &LibraryLookup,
         config: &mut config::Config,
         sending: Option<&str>,
+        on_pages: bool,
     ) -> Option<Picked> {
         let mut picked = None;
         if let Some(name) = sending {
@@ -413,13 +417,67 @@ impl Panel {
             self.confirmation = confirm;
         }
         if let Some(index) = select {
-            self.select_preset(index);
+            // A preset clicked while the pedal's own pages show brings the
+            // editor back, and the loaded one is not loaded again for it.
+            if on_pages {
+                picked = Some(Picked::Back);
+            }
+            let active = self.snapshot.as_ref().and_then(active_preset_index);
+            if !(on_pages && active == Some(index)) {
+                self.select_preset(index);
+            }
         }
         // Escape gets out of picking, as the card says.
         if sending.is_some() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
             picked = Some(Picked::Cancel);
         }
         picked
+    }
+
+    /// The PRO's own pages, as the device card's menu lists them: backups,
+    /// its NAM and impulse response libraries with what they hold, its
+    /// settings and its firmware.
+    pub(crate) fn pages(&self) -> Vec<shell::PedalPage> {
+        TABS.iter()
+            .map(|tab| match tab {
+                Tab::Backups => shell::PedalPage {
+                    label: "Backups".to_owned(),
+                    icon: Icon::History,
+                    count: None,
+                },
+                Tab::Library(library) => shell::PedalPage {
+                    label: library.title().to_owned(),
+                    icon: match library {
+                        Library::Irs => Icon::FileAudio,
+                        _ => Icon::AudioWaveform,
+                    },
+                    count: self.snapshot.as_ref().and_then(|snapshot| {
+                        snapshot
+                            .libraries
+                            .iter()
+                            .find(|state| state.library == *library)
+                            .map(|state| state.info.occupied().count().to_string())
+                    }),
+                },
+                Tab::Settings => shell::PedalPage {
+                    label: "Settings".to_owned(),
+                    icon: Icon::Sliders,
+                    count: None,
+                },
+                Tab::Firmware => shell::PedalPage {
+                    label: "Firmware".to_owned(),
+                    icon: Icon::PackageCheck,
+                    count: None,
+                },
+            })
+            .collect()
+    }
+
+    /// Show one of the PRO's own pages, by its place in that list.
+    pub(crate) fn open_page(&mut self, index: usize) {
+        if let Some(tab) = TABS.get(index) {
+            self.tab = *tab;
+        }
     }
 
     /// The device card's words for the PRO.

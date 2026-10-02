@@ -7,10 +7,10 @@ nav_order: 3
 The StompStation PRO uses a different USB protocol and has a different fixed
 signal chain from a Line 6 pedal. It does not use a different TonePush. Once it
 connects, the same editor appears: the pedal and its presets in the sidebar,
-the loaded preset across the top, and the same three pages. **Edit** holds the
-modelled signal chain and the selected block's knobs, **Library** the full
-local and Cloud library, and **Pedal** the pedal's backups, NAM and IR
-libraries and settings.
+the loaded preset across the top, the modelled signal chain and the selected
+block's knobs under it, and the full local and Cloud library along the bottom.
+A click on the pedal's card opens its own pages: its backups, NAM and IR
+libraries, settings and firmware.
 
 TonePush support is hardware-tested with a StompStation PRO running firmware
 1.5.12 and 2.0.10: every write it makes was read back on each. Patch
@@ -107,7 +107,7 @@ which is also what its preview in the library shows.
 
 ## Local tones, setlists, and Cloud
 
-The Library page is the same one used with an HX pedal:
+The library under the editor is the same one used with an HX pedal:
 
 - **Tones** stores byte-exact `.vxpreset` bytes in TonePush's content-addressed
   local library, with names, tags, ratings, Song details, immutable versions,
@@ -146,7 +146,8 @@ compared by release, so 1.5.10 and 1.5.12 count as the same.
 
 ## NAM and impulse-response libraries
 
-The Pedal page holds the PRO-specific libraries and backup tools, a tab each.
+The pedal's own pages hold the PRO-specific libraries and backup tools, a tab
+each.
 **NAM amps**, **NAM drives** and **Impulse responses** each list the library's
 slots with what each file says about itself (the gear a capture models, who
 captured it and its WaveNet size; an impulse response's length) and how many
@@ -188,7 +189,7 @@ pedal"), and the foot of the sidebar keeps saying it on every page.
 On a new machine, **Back up to unlock saving** takes Save's place, under a
 strip that says why: it reads the whole pedal into a checked backup in
 TonePush's backups folder and arms it. **Use an existing backup…** beside it,
-or on the Pedal page's Backups tab, checks a bundle taken earlier against the
+or on the pedal's Backups page, checks a bundle taken earlier against the
 pedal instead, and **Back up to a file…** there puts one where you choose. A
 bundle contains:
 
@@ -254,8 +255,8 @@ checks the file first: it must be a 64-bit ARM program and either an official
 release TonePush lists by its SHA-256, or a release whose file name
 (`s_pro_2_2_6.upd`) and contents agree on its version.
 
-On the Pedal page, **Firmware** takes you through it in five steps, always in
-view: Back up, Update Mode, Write, Restart, Check.
+On the pedal's own pages, **Firmware** takes you through it in five steps,
+always in view: Back up, Update Mode, Write, Restart, Check.
 
 1. Choose the `.zip` or the `.upd`. TonePush checks it, then backs the pedal
    up and checks the backup; Continue waits for both.
