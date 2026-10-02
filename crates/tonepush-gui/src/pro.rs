@@ -3546,6 +3546,442 @@ pub(crate) mod demo {
         }
     }
 
+    /// The chain a pedal at firmware 2.0.10 loads for a preset without a
+    /// router record, which `root\app\output\d_chain` restores.
+    pub(crate) const DEFAULT_CHAIN: [&str; 27] = [
+        "root\\app\\gate",
+        "s",
+        "root\\app\\pitch",
+        "s",
+        "root\\app\\exp",
+        "s",
+        "root\\app\\comp",
+        "s",
+        "root\\app\\mod_pre",
+        "s",
+        "root\\app\\drive",
+        "s",
+        "root\\app\\amp",
+        "s",
+        "root\\app\\ir",
+        "s",
+        "root\\app\\eq",
+        "s",
+        "",
+        "s",
+        "root\\app\\mod",
+        "s",
+        "root\\app\\delay",
+        "s",
+        "root\\app\\reverb",
+        "s",
+        "",
+    ];
+
+    /// The chains the design screenshots draw on firmware 2.0.10.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum DemoChain {
+        /// The default chain.
+        Default,
+        /// The delay and the reverb in parallel after the modulation.
+        Parallel,
+        /// A chorus, a switched-off flanger and the modulation in parallel
+        /// after the amp, with free positions before the amp.
+        ThreeWay,
+        /// The default chain with its free position after the EQ chosen,
+        /// to put a block there.
+        Picking,
+    }
+
+    impl DemoChain {
+        /// The router's value for this chain.
+        pub(crate) fn value(self) -> serde_json::Value {
+            let mut row: Vec<&str> = DEFAULT_CHAIN.to_vec();
+            match self {
+                DemoChain::Default | DemoChain::Picking => {}
+                DemoChain::Parallel => row[23] = "p",
+                DemoChain::ThreeWay => {
+                    for (cell, text) in [
+                        (2, "root\\app\\comp"),
+                        (4, "root\\app\\drive"),
+                        (6, ""),
+                        (8, ""),
+                        (10, ""),
+                        (16, "root\\app\\chorus"),
+                        (17, "p"),
+                        (18, "root\\app\\flanger"),
+                        (19, "p"),
+                    ] {
+                        row[cell] = text;
+                    }
+                }
+            }
+            serde_json::json!([row])
+        }
+    }
+
+    /// A block as firmware 2.x describes one: a node of its own, its
+    /// category in its style, and its on/off as its first control.
+    fn block(group: &str, desc: &str, cat: &str, on: bool) -> [(NodePath, NodeDescription); 2] {
+        [
+            node(
+                &format!("root\\app\\{group}"),
+                serde_json::json!({
+                    "type": "item", "desc": desc, "value": "", "def": "",
+                    "item_type": "block",
+                    "style": format!("cat:{cat};img:{};mode:mini;", cat.to_lowercase()),
+                }),
+            ),
+            switch(group, on),
+        ]
+    }
+
+    /// 03B Velvet Drive on a pedal at firmware 2.0.10, whose schema lists
+    /// every block it has, in its own order, whether the chain holds it or
+    /// not.
+    pub(super) fn snapshot_2x(chain: &DemoChain) -> Snapshot {
+        let mut fixed = vec![false; 27];
+        for position in [6, 11, 12] {
+            fixed[2 * position] = true;
+        }
+        let mut app = vec![
+            node(
+                "root\\app\\preset",
+                serde_json::json!({ "type": "plist", "desc": "Preset", "value": "Velvet Drive", "ref": "root\\presets" }),
+            ),
+            node(
+                "root\\app\\router",
+                serde_json::json!({
+                    "type": "router", "desc": "router", "value": chain.value(),
+                    "def": [DEFAULT_CHAIN], "fixed": [fixed],
+                }),
+            ),
+        ];
+        let percent = |group: &str, leaf: &str, desc: &str, value: f64| {
+            float(
+                &format!("root\\app\\{group}\\{leaf}"),
+                desc,
+                value,
+                0.0,
+                100.0,
+                Some("%"),
+            )
+        };
+        let gain = |group: &str, leaf: &str, desc: &str, value: f64| {
+            float(
+                &format!("root\\app\\{group}\\{leaf}"),
+                desc,
+                value,
+                0.0,
+                10.0,
+                None,
+            )
+        };
+        let blocks: Vec<(NodePath, NodeDescription)> = [
+            (
+                block("gate", "Gate", "Gate", true).to_vec(),
+                vec![
+                    float(
+                        "root\\app\\gate\\threshold",
+                        "Threshold",
+                        -52.0,
+                        -96.0,
+                        0.0,
+                        Some("dB"),
+                    ),
+                    float(
+                        "root\\app\\gate\\release",
+                        "Release",
+                        120.0,
+                        10.0,
+                        1000.0,
+                        Some("ms"),
+                    ),
+                ],
+            ),
+            (
+                block("pitch", "Pitch Engine", "Pitch", false).to_vec(),
+                vec![
+                    mode("pitch", "Octave", &["Octave", "Detune", "Whammy"]),
+                    percent("pitch", "mix", "Dry Mix", 60.0),
+                    percent("pitch", "lvl1", "Wet Mix", 40.0),
+                ],
+            ),
+            (
+                block("exp", "Expression", "Expr", false).to_vec(),
+                vec![percent("exp", "pos", "Position", 0.0)],
+            ),
+            (
+                block("comp", "Compressor", "Comp", true).to_vec(),
+                vec![
+                    mode("comp", "Studio", &["Dyn", "Studio"]),
+                    float(
+                        "root\\app\\comp\\threshold",
+                        "Threshold",
+                        -24.0,
+                        -60.0,
+                        0.0,
+                        Some("dB"),
+                    ),
+                    float("root\\app\\comp\\ratio", "Ratio", 4.0, 1.0, 20.0, None),
+                    float(
+                        "root\\app\\comp\\makeup",
+                        "Makeup",
+                        2.0,
+                        -12.0,
+                        12.0,
+                        Some("dB"),
+                    ),
+                ],
+            ),
+            (
+                block("mod_pre", "Mod Engine", "Mod", false).to_vec(),
+                vec![
+                    mode("mod_pre", "Phaser", &["Chorus", "Phaser", "Flanger"]),
+                    percent("mod_pre", "dpth", "Depth", 30.0),
+                ],
+            ),
+            (
+                block("flanger", "Vintage Flanger", "Mod", false).to_vec(),
+                vec![
+                    percent("flanger", "manual", "Manual", 45.0),
+                    percent("flanger", "depth", "Depth", 60.0),
+                    percent("flanger", "rate", "Rate", 25.0),
+                    percent("flanger", "res", "Resonance", 50.0),
+                ],
+            ),
+            (
+                block("chorus", "Vintage Chorus", "Mod", true).to_vec(),
+                vec![
+                    percent("chorus", "rate", "Rate", 35.0),
+                    percent("chorus", "depth", "Depth", 70.0),
+                    percent("chorus", "effect", "Effect Level", 55.0),
+                ],
+            ),
+            (
+                block("drive", "Drive", "Drive", true).to_vec(),
+                vec![
+                    model("drive", "model", DRIVES[0], "root\\nam_drive"),
+                    gain("drive", "gain", "Gain", 5.5),
+                    gain("drive", "lvl", "Volume", 7.0),
+                ],
+            ),
+            (
+                block("amp", "Amp", "Amp", true).to_vec(),
+                vec![
+                    model("amp", "model", AMPS[0], "root\\nam_amp"),
+                    gain("amp", "gain", "Gain", 6.2),
+                    gain("amp", "low", "Low", 4.8),
+                    gain("amp", "mid", "Mid", 6.0),
+                    gain("amp", "treble", "Treble", 5.5),
+                    float(
+                        "root\\app\\amp\\lvl",
+                        "Volume",
+                        -1.5,
+                        -24.0,
+                        12.0,
+                        Some("dB"),
+                    ),
+                ],
+            ),
+            (
+                block("ir", "IR", "IR", true).to_vec(),
+                vec![
+                    model("ir", "ir", IRS[0], "root\\ir_list"),
+                    float(
+                        "root\\app\\ir\\lo_cut",
+                        "Lo Cut",
+                        80.0,
+                        20.0,
+                        500.0,
+                        Some("Hz"),
+                    ),
+                    percent("ir", "blend", "Blend", 100.0),
+                ],
+            ),
+            (
+                block("eq", "Parametric EQ", "EQ", true).to_vec(),
+                vec![
+                    float("root\\app\\eq\\low", "Low", 1.5, -12.0, 12.0, Some("dB")),
+                    float("root\\app\\eq\\mid", "Mid", -2.0, -12.0, 12.0, Some("dB")),
+                    float("root\\app\\eq\\high", "High", 1.0, -12.0, 12.0, Some("dB")),
+                ],
+            ),
+            (
+                block("eq2", "Parametric EQ", "EQ", true).to_vec(),
+                vec![
+                    float("root\\app\\eq2\\low", "Low", 0.0, -12.0, 12.0, Some("dB")),
+                    float("root\\app\\eq2\\mid", "Mid", 0.0, -12.0, 12.0, Some("dB")),
+                    float("root\\app\\eq2\\high", "High", 0.0, -12.0, 12.0, Some("dB")),
+                ],
+            ),
+            (
+                block("crossover", "Crossover", "Filter", true).to_vec(),
+                vec![
+                    float(
+                        "root\\app\\crossover\\freq",
+                        "Frequency",
+                        400.0,
+                        50.0,
+                        5000.0,
+                        Some("Hz"),
+                    ),
+                    float(
+                        "root\\app\\crossover\\lo_level",
+                        "Low Level",
+                        0.0,
+                        -24.0,
+                        12.0,
+                        Some("dB"),
+                    ),
+                    float(
+                        "root\\app\\crossover\\hi_level",
+                        "High Level",
+                        0.0,
+                        -24.0,
+                        12.0,
+                        Some("dB"),
+                    ),
+                ],
+            ),
+            (
+                block("mod", "Mod Engine", "Mod", true).to_vec(),
+                vec![
+                    mode(
+                        "mod",
+                        "Chorus",
+                        &["Chorus", "Flanger", "Phaser", "Tremolo", "Rotary"],
+                    ),
+                    percent("mod", "dpth", "Depth", 55.0),
+                    percent("mod", "mix", "Dry-Wet", 50.0),
+                ],
+            ),
+            (
+                block("delay", "Delay Engine", "Delay", true).to_vec(),
+                vec![
+                    float(
+                        "root\\app\\delay\\time",
+                        "Time",
+                        410.0,
+                        20.0,
+                        2000.0,
+                        Some("ms"),
+                    ),
+                    percent("delay", "fdbk", "Feedback", 32.0),
+                    percent("delay", "mix", "Dry-Wet", 28.0),
+                ],
+            ),
+            (
+                block("delay2", "Delay Engine", "Delay", true).to_vec(),
+                vec![
+                    float(
+                        "root\\app\\delay2\\time",
+                        "Time",
+                        120.0,
+                        20.0,
+                        2000.0,
+                        Some("ms"),
+                    ),
+                    percent("delay2", "fdbk", "Feedback", 10.0),
+                    percent("delay2", "mix", "Dry-Wet", 20.0),
+                ],
+            ),
+            (
+                block("reverb", "Reverb Engine", "Reverb", true).to_vec(),
+                vec![
+                    mode(
+                        "reverb",
+                        "Shimmer",
+                        &["Room", "Hall", "Plate", "Spring", "Shimmer"],
+                    ),
+                    float(
+                        "root\\app\\reverb\\decay",
+                        "Decay",
+                        4.2,
+                        0.1,
+                        20.0,
+                        Some("s"),
+                    ),
+                    percent("reverb", "mix", "Dry-Wet", 35.0),
+                ],
+            ),
+            (
+                block("reverb2", "Reverb Engine", "Reverb", true).to_vec(),
+                vec![
+                    mode(
+                        "reverb2",
+                        "Spring",
+                        &["Room", "Hall", "Plate", "Spring", "Shimmer"],
+                    ),
+                    float(
+                        "root\\app\\reverb2\\decay",
+                        "Decay",
+                        1.5,
+                        0.1,
+                        20.0,
+                        Some("s"),
+                    ),
+                    percent("reverb2", "mix", "Dry-Wet", 25.0),
+                ],
+            ),
+            (
+                block("pickup", "Pickup Sim", "Misc", true).to_vec(),
+                vec![
+                    node(
+                        "root\\app\\pickup\\in_pick",
+                        serde_json::json!({
+                            "type": "enum", "desc": "Input", "value": "Single coil",
+                            "options": ["Single coil", "Humbucker"],
+                        }),
+                    ),
+                    percent("pickup", "mix", "Dry-Wet", 100.0),
+                ],
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(head, controls)| head.into_iter().chain(controls))
+        .collect();
+        app.extend(blocks);
+        app.push(node(
+            "root\\app\\output",
+            serde_json::json!({
+                "type": "item", "desc": "Master", "value": "", "def": "",
+                "item_type": "master", "style": "img:master;mode:mini;",
+            }),
+        ));
+        app.push(float(
+            "root\\app\\output\\tempo_bpm",
+            "Tempo",
+            96.0,
+            30.0,
+            240.0,
+            Some("BPM"),
+        ));
+        app.push(float(
+            "root\\app\\output\\vol",
+            "Volume",
+            50.0,
+            0.0,
+            100.0,
+            Some("%"),
+        ));
+        for (leaf, desc) in [
+            ("c_chain", "Clear Chain"),
+            ("d_chain", "Load Default Chain"),
+        ] {
+            app.push(node(
+                &format!("root\\app\\output\\{leaf}"),
+                serde_json::json!({
+                    "type": "action", "desc": desc, "value": "idle", "action_type": "smp_cfm",
+                }),
+            ));
+        }
+        let mut snapshot = snapshot();
+        snapshot.identity.version = "2.0.10".into();
+        snapshot.app = app;
+        snapshot
+    }
+
     impl Panel {
         /// Cut the panel off from its worker, so nothing a test does reaches
         /// a pedal plugged into the machine, and count the Connects it asks
@@ -3594,6 +4030,28 @@ pub(crate) mod demo {
             self.selected_group = "amp".into();
             self.undo_depth = 2;
             self.facts = facts();
+        }
+
+        /// The synthetic pedal on firmware 2.0.10 playing one of the
+        /// design's chains, guarded by a backup and with two controls turned
+        /// since the last save.
+        pub(crate) fn show_demo_router(&mut self, chain: DemoChain) {
+            self.show_demo();
+            self.install_snapshot(snapshot_2x(&chain), true);
+            for (path, value) in [
+                ("root\\app\\amp\\gain", 6.2),
+                ("root\\app\\delay\\mix", 28.0),
+            ] {
+                self.saved_drafts
+                    .insert(path.into(), Value::from(value - 1.0));
+            }
+            self.recompute_dirty();
+            self.selected_group = match chain {
+                DemoChain::Default | DemoChain::Picking => "amp",
+                DemoChain::Parallel => "delay",
+                DemoChain::ThreeWay => "chorus",
+            }
+            .into();
         }
 
         /// Which slots hold what the library holds, as a backup would say.

@@ -92,10 +92,18 @@ enum Scene {
     ConnectNotFound,
     /// A StompStation PRO, a tempo it does not take just typed.
     ProTempoRefused,
+    /// A StompStation PRO on firmware 2.0.10 with the default chain.
+    ProRouter,
+    /// Firmware 2.0.10, the delay and the reverb in parallel.
+    ProRouterParallel,
+    /// Firmware 2.0.10, three blocks in parallel and free positions.
+    ProRouterThreeWay,
+    /// Firmware 2.0.10, a free position chosen to put a block in.
+    ProRouterPicker,
 }
 
 impl Scene {
-    const ALL: [Scene; 27] = [
+    const ALL: [Scene; 31] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -123,6 +131,10 @@ impl Scene {
         Scene::ProFirmwareFailed,
         Scene::ConnectNotFound,
         Scene::ProTempoRefused,
+        Scene::ProRouter,
+        Scene::ProRouterParallel,
+        Scene::ProRouterThreeWay,
+        Scene::ProRouterPicker,
     ];
 
     fn name(self) -> &'static str {
@@ -154,6 +166,10 @@ impl Scene {
             Scene::ProFirmwareFailed => "pro-firmware-failed",
             Scene::ConnectNotFound => "connect-not-found",
             Scene::ProTempoRefused => "pro-tempo-refused",
+            Scene::ProRouter => "pro-router",
+            Scene::ProRouterParallel => "pro-router-parallel",
+            Scene::ProRouterThreeWay => "pro-router-three-way",
+            Scene::ProRouterPicker => "pro-router-picker",
         }
     }
 
@@ -215,6 +231,19 @@ impl Scene {
             Scene::ProTempoRefused => {
                 pro(app);
                 app.pro.demo_tempo_refused();
+            }
+            Scene::ProRouter
+            | Scene::ProRouterParallel
+            | Scene::ProRouterThreeWay
+            | Scene::ProRouterPicker => {
+                use crate::pro::demo::DemoChain;
+                pro(app);
+                app.pro.show_demo_router(match self {
+                    Scene::ProRouterParallel => DemoChain::Parallel,
+                    Scene::ProRouterThreeWay => DemoChain::ThreeWay,
+                    Scene::ProRouterPicker => DemoChain::Picking,
+                    _ => DemoChain::Default,
+                });
             }
             Scene::ProUnprotected => {
                 pro(app);
