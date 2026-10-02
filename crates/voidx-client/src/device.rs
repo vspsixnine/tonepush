@@ -9,16 +9,37 @@ use voidx_proto::{router, Command, Frame, NodeDescription, NodePath, NodeTree, R
 use crate::session::Session;
 use crate::{values_equivalent, Error, Link, Notification, Result};
 
-/// Firmware on which every persistent write TonePush makes was checked on a
-/// pedal, by reading each result back: saving, renaming, moving, clearing,
-/// preset, IR, stereo IR and NAM uploads, global settings and restore. 2.2.6
-/// is left out because its USB serial stops answering during long reads.
-pub const VERIFIED_FIRMWARE: &[&str] = &["1.5.12", "2.0.10"];
+/// Firmware release lines (major.minor) on which every persistent write
+/// TonePush makes was checked on a pedal, by reading each result back:
+/// saving, renaming, moving, clearing, preset, IR, stereo IR and NAM
+/// uploads, global settings and restore. Checked on 1.5.12 and 2.0.10; patch
+/// releases within a line are treated alike. 2.2 is left out because its USB
+/// serial stops answering during long reads.
+pub const VERIFIED_FIRMWARE: &[&str] = &["1.5", "2.0"];
 
-/// 2.0.10's NAM player caches models by slot and is not told when slots are
+/// 2.0's NAM player caches models by slot and is not told when slots are
 /// swapped, so a preset can keep playing the model that used to be there
-/// until the pedal restarts. 2.2.6 fixed it.
-const NAM_MOVES_STALE: &[&str] = &["2.0.10"];
+/// until the pedal restarts. 2.2 fixed it.
+const NAM_MOVES_STALE: &[&str] = &["2.0"];
+
+/// The release line of a firmware version: `2.0.10` to `2.0`. `None` for
+/// anything that is not at least `major.minor` in digits, such as
+/// "Update Mode".
+pub fn release_line(version: &str) -> Option<&str> {
+    let mut parts = version.splitn(3, '.');
+    let major = parts
+        .next()
+        .filter(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))?;
+    let minor = parts
+        .next()
+        .filter(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))?;
+    if let Some(patch) = parts.next() {
+        if patch.is_empty() || !patch.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    Some(&version[..major.len() + 1 + minor.len()])
+}
 const NAME_CHUNK_BYTES: usize = 128;
 const READ_BATCH_CHUNKS: usize = 32;
 /// Chunk data asked for in one batch. Firmware 2.2.6 moved presets to
@@ -602,7 +623,10 @@ impl<L: Link> Device<L> {
             )));
         }
         self.require_writes()?;
-        if list.gzip && NAM_MOVES_STALE.contains(&self.identity.version.as_str()) {
+        if list.gzip
+            && release_line(&self.identity.version)
+                .is_some_and(|line| NAM_MOVES_STALE.contains(&line))
+        {
             return Err(Error::WriteRefused(format!(
                 "firmware {} keeps playing the old model after NAM slots move until it restarts; update to 2.2.6 to reorder models",
                 self.identity.version
@@ -814,11 +838,11 @@ pub(crate) fn read_batch_chunks(chunk_size: usize) -> usize {
 
 fn assess_identity(identity: &Identity) -> WriteSafety {
     let expected = format!(
-        "StompStation PRO / firmware {} / CM4 / sspro",
-        VERIFIED_FIRMWARE.join(" or ")
+        "StompStation PRO / firmware {}.x / CM4 / sspro",
+        VERIFIED_FIRMWARE.join(".x or ")
     );
     if identity.name == "StompStation PRO"
-        && VERIFIED_FIRMWARE.contains(&identity.version.as_str())
+        && release_line(&identity.version).is_some_and(|line| VERIFIED_FIRMWARE.contains(&line))
         && identity.architecture == "CM4"
         && identity.license == "sspro"
     {
@@ -978,7 +1002,7 @@ mod tests {
     #[test]
     fn writes_need_both_a_verified_identity_and_explicit_opt_in() {
         let link = Scripted {
-            input: Cursor::new(identity_frames(VERIFIED_FIRMWARE[0])),
+            input: Cursor::new(identity_frames("1.5.12")),
             output: vec![],
         };
         let mut device = Device::connect(link).unwrap();
@@ -988,7 +1012,7 @@ mod tests {
         assert!(device.writes_enabled());
 
         let link = Scripted {
-            input: Cursor::new(identity_frames("1.5.13")),
+            input: Cursor::new(identity_frames("1.6.0")),
             output: vec![],
         };
         let mut future = Device::connect(link).unwrap();
@@ -1138,6 +1162,34 @@ mod tests {
     }
 
     #[test]
+    fn patch_releases_share_their_line() {
+        assert_eq!(release_line("1.5.10"), Some("1.5"));
+        assert_eq!(release_line("2.0.10"), Some("2.0"));
+        assert_eq!(release_line("2.2"), Some("2.2"));
+        assert_eq!(release_line("Update Mode"), None);
+        assert_eq!(release_line("1.5.x"), None);
+        for (version, verified) in [
+            ("1.5.10", true),
+            ("1.5.12", true),
+            ("2.0.8", true),
+            ("2.2.6", false),
+            ("1.4.2", false),
+        ] {
+            let identity = Identity {
+                name: "StompStation PRO".into(),
+                version: version.into(),
+                architecture: "CM4".into(),
+                license: "sspro".into(),
+            };
+            assert_eq!(
+                assess_identity(&identity) == WriteSafety::Verified,
+                verified,
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
     fn a_batch_is_bounded_by_bytes_as_well_as_chunks() {
         assert_eq!(read_batch_chunks(128), 32);
         assert_eq!(read_batch_chunks(1024), 16);
@@ -1146,7 +1198,7 @@ mod tests {
 
     #[test]
     fn chunk_response_must_echo_its_coordinates() {
-        let mut frames = identity_frames(VERIFIED_FIRMWARE[0]);
+        let mut frames = identity_frames("1.5.12");
         frames.extend_from_slice(
             b"dread root\\presets:{\"index\":0,\"chunk\":2,\"value\":\"0001\"}\0",
         );
@@ -1164,7 +1216,7 @@ mod tests {
 
     #[test]
     fn batched_blob_reads_validate_and_restore_chunk_order() {
-        let mut frames = identity_frames(VERIFIED_FIRMWARE[0]);
+        let mut frames = identity_frames("1.5.12");
         frames.extend_from_slice(
             b"dread root\\presets:{\"index\":0,\"chunk\":2,\"value\":\"0203\"}\0\
               dread root\\presets:{\"index\":0,\"chunk\":1,\"value\":\"0001\"}\0",

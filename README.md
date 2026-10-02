@@ -74,7 +74,8 @@ model-shelf and pedal-knob design instead of reproducing VoidX Control's UI:
   chunks instead of waiting for one USB round trip per chunk.
 - **Conservative compatibility.** Reads work with self-described protocol
   data; writes are enabled only for the exact identity and firmware verified
-  on hardware (`StompStation PRO`, CM4, `sspro`, firmware 1.5.12 or 2.0.10).
+  on hardware (`StompStation PRO`, CM4, `sspro`, firmware 1.5.x or 2.0.x;
+  verified on 1.5.12 and 2.0.10, with patch releases treated alike).
   Other firmware, including 2.2.6, opens read only, with presets and knobs
   still live.
 
