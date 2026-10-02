@@ -130,10 +130,20 @@ enum Scene {
     HxSetlistAudition,
     /// No pedal: Dream Pop clicked, shown where the editor would be.
     NoDeviceGlimpse,
+    /// Slapback Twang dragged over 05B Chime Clean.
+    HxDragToneToSlot,
+    /// The preset in 02C dragged onto the Tones tab.
+    HxDragPresetToTones,
+    /// A TonePush tone dragged over 07C.
+    HxDragCloudToSlot,
+    /// Three tones dragged over 05B.
+    HxDragSeveral,
+    /// A setlist dragged over the presets.
+    HxDragSetlist,
 }
 
 impl Scene {
-    const ALL: [Scene; 46] = [
+    const ALL: [Scene; 51] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -180,6 +190,11 @@ impl Scene {
         Scene::HxCloudAudition,
         Scene::HxSetlistAudition,
         Scene::NoDeviceGlimpse,
+        Scene::HxDragToneToSlot,
+        Scene::HxDragPresetToTones,
+        Scene::HxDragCloudToSlot,
+        Scene::HxDragSeveral,
+        Scene::HxDragSetlist,
     ];
 
     fn name(self) -> &'static str {
@@ -230,6 +245,37 @@ impl Scene {
             Scene::HxCloudAudition => "hx-cloud-audition",
             Scene::HxSetlistAudition => "hx-setlist-audition",
             Scene::NoDeviceGlimpse => "no-device-glimpse",
+            Scene::HxDragToneToSlot => "hx-drag-tone-to-slot",
+            Scene::HxDragPresetToTones => "hx-drag-preset-to-tones",
+            Scene::HxDragCloudToSlot => "hx-drag-cloud-to-slot",
+            Scene::HxDragSeveral => "hx-drag-several",
+            Scene::HxDragSetlist => "hx-drag-setlist",
+        }
+    }
+
+    /// What is dragged in a drag scene, held as the payload every frame.
+    fn dragged(self, app: &App) -> Option<crate::dnd::Dragged> {
+        use crate::dnd::Dragged;
+        match self {
+            Scene::HxDragToneToSlot | Scene::HxDragSeveral => {
+                let index = tone_named(app, "Slapback Twang");
+                Some(app.dragged_tones(index))
+            }
+            Scene::HxDragPresetToTones => Some(Dragged::Preset(5)),
+            Scene::HxDragCloudToSlot => Some(Dragged::Cloud(0)),
+            Scene::HxDragSetlist => Some(Dragged::Setlist(0)),
+            _ => None,
+        }
+    }
+
+    /// Where the pointer is in a drag scene, at 1280 by 760.
+    fn pointer(self) -> Option<egui::Pos2> {
+        match self {
+            Scene::HxDragToneToSlot | Scene::HxDragSeveral => Some(egui::pos2(150.0, 484.0)),
+            Scene::HxDragPresetToTones => Some(egui::pos2(272.0, 548.0)),
+            Scene::HxDragCloudToSlot => Some(egui::pos2(150.0, 678.0)),
+            Scene::HxDragSetlist => Some(egui::pos2(120.0, 360.0)),
+            _ => None,
         }
     }
 
@@ -329,6 +375,7 @@ impl Scene {
                     writes: app.plan_put(13, &tones),
                     beside: Some(13),
                     back_up_first: false,
+                    clears: None,
                 });
             }
             Scene::HxPutSeveral => {
@@ -356,6 +403,7 @@ impl Scene {
                     writes: app.plan_put(41, &tones),
                     beside: None,
                     back_up_first: false,
+                    clears: None,
                 });
             }
             Scene::ProReadOnlyKeep => {
@@ -481,6 +529,35 @@ impl Scene {
                     narrow: None,
                     open: None,
                 });
+            }
+            Scene::HxDragToneToSlot | Scene::HxDragSeveral => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                let index = tone_named(app, "Slapback Twang");
+                app.choose_tone(index);
+                app.lib_reveal = true;
+                if self == Scene::HxDragSeveral {
+                    app.lib_chosen = ["Slapback Twang", "Surf Spring", "Tape Echo Clean"]
+                        .iter()
+                        .map(|name| app.lib_entries[tone_named(app, name)].hash.clone())
+                        .collect();
+                }
+            }
+            Scene::HxDragPresetToTones => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+            }
+            Scene::HxDragCloudToSlot => {
+                hx_stomp(app);
+                cloud_feed(app);
+                app.lib_showing = crate::LibraryView::Cloud;
+                app.cloud_selected = Some(0);
+            }
+            Scene::HxDragSetlist => {
+                hx_stomp(app);
+                app.lib_showing = crate::LibraryView::Setlists;
+                app.select_setlist_entry(0);
+                tall_pane(app);
             }
             Scene::ProPages => {
                 use crate::pro::demo::DemoChain;
@@ -1040,6 +1117,9 @@ impl Demo {
         if matches!(self.scene, Scene::HxPages | Scene::ProPages) {
             egui::Popup::open_id(ui.ctx(), shell::device_card_menu());
         }
+        if let Some(dragged) = self.scene.dragged(app) {
+            egui::DragAndDrop::set_payload(ui.ctx(), dragged);
+        }
         if matches!(self.scene, Scene::HxAuditionKeep | Scene::ProReadOnlyKeep) {
             egui::Popup::open_id(ui.ctx(), crate::audition::keep_menu());
         }
@@ -1150,7 +1230,11 @@ fn screenshots() {
                     );
                 // Fonts and styles installed on the first frame apply from
                 // the next; a few more let images load and layouts settle.
-                harness.run_steps(8);
+                harness.run_steps(2);
+                if let Some(pointer) = scene.pointer() {
+                    harness.hover_at(pointer);
+                }
+                harness.run_steps(6);
                 let image = harness.render().expect("the frame renders");
                 let path = out.join(format!(
                     "{}-{width}x{height}-{}.png",

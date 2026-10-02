@@ -55,6 +55,9 @@ pub(crate) struct Write {
     pub name: String,
     /// What the slot holds now, when it holds something.
     pub replaces: Option<String>,
+    /// The preset itself, for one copied from another slot: it is not a
+    /// library tone to be read by its hash.
+    pub bytes: Option<Vec<u8>>,
 }
 
 /// The question a put asks before it replaces anything.
@@ -65,6 +68,8 @@ pub(crate) struct Asking {
     pub beside: Option<i64>,
     /// A StompStation PRO with no checked backup: the put takes one first.
     pub back_up_first: bool,
+    /// A move: the slot it came from, emptied once it is written.
+    pub clears: Option<i64>,
 }
 
 /// How the question was answered.
@@ -201,6 +206,7 @@ impl App {
                     hash: hash.clone(),
                     name: name.clone(),
                     replaces: (!held.trim().is_empty()).then(|| held.trim().to_owned()),
+                    bytes: None,
                 })
             })
             .collect()
@@ -253,9 +259,52 @@ impl App {
                 writes,
                 beside: (sending.tones.len() == 1).then_some(slot),
                 back_up_first,
+                clears: None,
             });
         } else {
             self.write_puts(writes);
+        }
+    }
+
+    /// Put a preset's own bytes in a slot, copied from another: asking when
+    /// it replaces something, and for a move, emptying the slot it came
+    /// from once it is written.
+    pub(crate) fn put_bytes(
+        &mut self,
+        slot: i64,
+        name: String,
+        bytes: Vec<u8>,
+        clears: Option<i64>,
+    ) {
+        if let Some(why) = self.put_refusal() {
+            return self.problem(format!("Nothing can be put in a slot: {why}"));
+        }
+        let names = self.slot_names();
+        let Some(held) = usize::try_from(slot)
+            .ok()
+            .and_then(|index| names.get(index))
+        else {
+            return;
+        };
+        let write = Write {
+            slot,
+            label: self.active_slot_label(slot),
+            hash: library::hash_of(&bytes),
+            name,
+            replaces: (!held.trim().is_empty()).then(|| held.trim().to_owned()),
+            bytes: Some(bytes),
+        };
+        let back_up_first = self.put_needs_backup();
+        let loaded = self.loaded_slot_index();
+        if write.replaces.is_some() || clears.is_some() || back_up_first || Some(slot) == loaded {
+            self.put_question = Some(Asking {
+                writes: vec![write],
+                beside: Some(slot),
+                back_up_first,
+                clears,
+            });
+        } else {
+            self.write_puts(vec![write]);
         }
     }
 
@@ -263,10 +312,15 @@ impl App {
     /// changes and all, and the writes go to the pedal's memory without
     /// touching the loaded buffer.
     pub(crate) fn write_puts(&mut self, writes: Vec<Write>) {
+        self.write_puts_clearing(writes, None);
+    }
+
+    /// The same, emptying a slot after: the one a move came from.
+    pub(crate) fn write_puts_clearing(&mut self, writes: Vec<Write>, clears: Option<i64>) {
         self.put_back();
         let mut items = Vec::new();
         for write in &writes {
-            let Some(bytes) = library::read(&write.hash) else {
+            let Some(bytes) = write.bytes.clone().or_else(|| library::read(&write.hash)) else {
                 self.problem(format!("{} is missing from the library", write.name));
                 continue;
             };
@@ -303,12 +357,14 @@ impl App {
                 self.pro.send_tone(slot as usize, name, bytes);
             }
         } else {
-            self.send(Cmd::PushSetlist(
-                items
-                    .into_iter()
-                    .map(|(slot, name, bytes)| (slot, Some((name, bytes))))
-                    .collect(),
-            ));
+            let mut writes: Vec<crate::session::SlotWrite> = items
+                .into_iter()
+                .map(|(slot, name, bytes)| (slot, Some((name, bytes))))
+                .collect();
+            if let Some(slot) = clears {
+                writes.push((slot, None));
+            }
+            self.send(Cmd::PushSetlist(writes));
         }
         self.wrote = Some((words, std::time::Instant::now()));
     }
@@ -522,7 +578,7 @@ impl App {
                     self.put_after_backup = Some(asking.writes);
                     self.pro.back_up_here();
                 } else {
-                    self.write_puts(asking.writes);
+                    self.write_puts_clearing(asking.writes, asking.clears);
                 }
             }
             Some(Answer::Cancel) => self.put_question = None,
@@ -591,6 +647,19 @@ impl App {
                         theme::muted(),
                         &[(write.label.as_str(), true), (" is empty", false)],
                     ),
+                }
+                if let Some(from) = asking.clears {
+                    let label = self.active_slot_label(from);
+                    fact(
+                        ui,
+                        Icon::ArrowDownToLine,
+                        theme::muted(),
+                        &[
+                            ("A move: ", false),
+                            (label.as_str(), true),
+                            (" is left empty once it is written", false),
+                        ],
+                    );
                 }
                 if let Some((icon, words, hot)) = leaves {
                     fact(

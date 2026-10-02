@@ -166,6 +166,7 @@ impl Panel {
             .show(root, |ui| {
                 notch = self.draw_board(ui, snapshot, &g, tier, true);
             });
+        self.board_rect = Some(panel.response.rect);
         board::board_edge(root, panel.response.rect, notch);
     }
 

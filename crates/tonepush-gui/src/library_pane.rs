@@ -345,10 +345,31 @@ impl App {
                 (cloud_count > 0).then_some(cloud_count),
             ),
         ];
+        let dragged = self.dragged(ui.ctx());
         for (view, icon, label, count) in tabs {
             let on = self.lib_showing == view;
             let count = count.map(|count| crate::format_count(count as u64));
-            if pane_tab(ui, icon, label, count.as_deref(), on, !folded).clicked() {
+            // While something is dragged, a tab that takes it says so; the
+            // one under the pointer turns into what the drop does.
+            let target = crate::dnd::Target::Tab(view);
+            let drop =
+                dragged
+                    .as_ref()
+                    .map(|dragged| match self.drop_outcome(dragged, target, false) {
+                        Some(outcome) if !outcome.refused => {
+                            if self.drops.hover == Some(target) {
+                                TabDrop::Over(outcome.icon, outcome.words)
+                            } else {
+                                TabDrop::Takes
+                            }
+                        }
+                        _ => TabDrop::Refuses,
+                    });
+            let response = pane_tab(ui, icon, label, count.as_deref(), on, !folded, drop);
+            if dragged.is_some() {
+                self.drop_zone(response.rect, target);
+            }
+            if response.clicked() {
                 self.open_library(view, tier);
             }
         }
@@ -556,6 +577,16 @@ impl App {
 
 /// One of the pane's tabs: its label and count, the chosen one underlined.
 /// Folded, none is underlined: the pane shows none of them.
+/// What a tab says while something is dragged.
+enum TabDrop {
+    /// It would take the drop: a faint dashed edge.
+    Takes,
+    /// The pointer is over it: it turns into what the drop does.
+    Over(Icon, String),
+    /// It would not: dimmed.
+    Refuses,
+}
+
 fn pane_tab(
     ui: &mut Ui,
     icon: Option<Icon>,
@@ -563,7 +594,33 @@ fn pane_tab(
     count: Option<&str>,
     on: bool,
     underline: bool,
+    drop: Option<TabDrop>,
 ) -> egui::Response {
+    if let Some(TabDrop::Over(icon, words)) = &drop {
+        let galley = shell::galley(ui, words, theme::semibold(13.0), theme::accent());
+        let width = 20.0 + 15.0 + 7.0 + galley.size().x;
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(7), theme::accent_soft());
+        theme::paint::dashed_rect(
+            ui.painter(),
+            rect.shrink(0.75),
+            6.5,
+            Stroke::new(1.5, theme::accent_line()),
+            4.0,
+            3.0,
+        );
+        let y = rect.center().y;
+        theme::paint_icon(
+            ui,
+            *icon,
+            Pos2::new(rect.left() + 17.5, y),
+            15.0,
+            theme::accent(),
+        );
+        shell::paint_line(ui, galley, rect.left() + 32.0, y);
+        return response;
+    }
     let label_width = shell::galley(ui, label, theme::medium(13.0), theme::text())
         .size()
         .x;
@@ -580,13 +637,25 @@ fn pane_tab(
         width += 7.0 + count_width;
     }
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
-    let ink = if on {
+    let ink = if matches!(drop, Some(TabDrop::Refuses)) {
+        theme::faint()
+    } else if on {
         theme::text()
     } else if response.hovered() {
         theme::text_soft()
     } else {
         theme::muted()
     };
+    if matches!(drop, Some(TabDrop::Takes)) {
+        theme::paint::dashed_rect(
+            ui.painter(),
+            rect.shrink(0.75),
+            6.5,
+            Stroke::new(1.0, theme::alpha(theme::accent_line(), 0.6)),
+            4.0,
+            3.0,
+        );
+    }
     let galley = shell::galley(ui, label, theme::medium(13.0), ink);
     let count = count.map(|count| {
         shell::galley(

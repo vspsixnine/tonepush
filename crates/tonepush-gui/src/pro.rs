@@ -322,6 +322,11 @@ pub(crate) struct Panel {
     pub(crate) hearing: Option<crate::audition::Shown>,
     /// The slots the open put question would write; set by the app.
     pub(crate) put_targets: Vec<usize>,
+    /// Something a slot would take is dragged over the presets; set by the
+    /// app.
+    pub(crate) dropping: bool,
+    /// Where the board was drawn, for drops on it.
+    pub(crate) board_rect: Option<egui::Rect>,
     /// Where each preset's row was drawn this frame.
     row_rects: BTreeMap<usize, egui::Rect>,
     preview: Option<(String, Snapshot)>,
@@ -417,6 +422,8 @@ impl Panel {
             audition_failures: Vec::new(),
             hearing: None,
             put_targets: Vec::new(),
+            dropping: false,
+            board_rect: None,
             row_rects: BTreeMap::new(),
             preview: None,
             confirmation: None,
@@ -748,6 +755,14 @@ impl Panel {
     /// Where a preset's row was drawn this frame, if it shows.
     pub(crate) fn row_rect(&self, index: usize) -> Option<egui::Rect> {
         self.row_rects.get(&index).copied()
+    }
+
+    /// Every preset row drawn this frame, by slot.
+    pub(crate) fn row_rects(&self) -> Vec<(usize, egui::Rect)> {
+        self.row_rects
+            .iter()
+            .map(|(index, rect)| (*index, *rect))
+            .collect()
     }
 
     /// The firmware TonePush plays this pedal on without writing to it.

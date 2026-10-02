@@ -906,6 +906,9 @@ icons! {
     Filter => "filter",
     // A tone shown, not played.
     Eye => "eye",
+    // Drops: publishing, and keeping the pedal as a setlist.
+    CloudUpload => "cloud-upload",
+    ListMusic => "list-music",
 }
 
 impl Icon {

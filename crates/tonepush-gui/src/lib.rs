@@ -18,6 +18,7 @@ pub mod cloud;
 mod config;
 mod connect;
 mod devices;
+mod dnd;
 mod eq;
 mod floor;
 pub mod library;
@@ -232,10 +233,13 @@ struct CloudEntry {
     row: LibEntry,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CloudAction {
     Audition,
     Computer,
+    /// Kept in the library, then put in this slot, asking first when that
+    /// replaces something: a TonePush tone dropped on a preset.
+    PutIn(i64),
 }
 
 /// One cloud artifact in flight and what the click meant to do with it once it
@@ -534,6 +538,12 @@ pub struct App {
     sending: Option<put::Sending>,
     /// The question a put asks before it replaces anything.
     put_question: Option<put::Asking>,
+    /// Where things can be dropped this frame, and what the pointer is over.
+    drops: dnd::Drops,
+    /// Where the board was drawn, for drops on it.
+    board_rect: Option<egui::Rect>,
+    /// Where the preset list was drawn, for a setlist dropped on it.
+    presets_rect: Option<egui::Rect>,
     /// Where each preset's row was drawn this frame, for a question to
     /// hang beside.
     row_rects: std::collections::BTreeMap<i64, egui::Rect>,
@@ -1448,6 +1458,9 @@ impl App {
             name_clash: None,
             sending: None,
             put_question: None,
+            drops: dnd::Drops::default(),
+            board_rect: None,
+            presets_rect: None,
             row_rects: std::collections::BTreeMap::new(),
             put_after_backup: None,
             wrote: None,
@@ -2052,10 +2065,14 @@ impl App {
         self.settle_publishing(&ctx);
         self.settle_cloud_search(&ctx);
         self.settle_cloud_download(&ctx);
-        if pro_active {
-            self.pro.dropped_files(&ctx);
-        } else {
-            self.dropped_files(&ctx);
+        // A tone file dropped on the Tones tab or a preset goes there; any
+        // other drop is what it always was.
+        if !self.dropped_tone_files(&ctx) {
+            if pro_active {
+                self.pro.dropped_files(&ctx);
+            } else {
+                self.dropped_files(&ctx);
+            }
         }
 
         // The sidebar claims the left edge first, so it runs the window's
@@ -2114,6 +2131,8 @@ impl App {
         self.name_clash_window(&ctx);
         self.save_setlist_window(&ctx);
         self.confirm_switch_window(&ctx);
+        self.register_drop_zones(&ctx);
+        self.settle_drop(&ctx);
         // Over everything: the one step the app cannot work without.
         self.closing_window(&ctx);
         // The first frame is up: an update that relaunched into this version
@@ -3917,7 +3936,7 @@ impl App {
         let id = entry.tone.summary.id;
         let purpose = match action {
             CloudAction::Audition => cloud::Purpose::Audition,
-            CloudAction::Computer => cloud::Purpose::Download,
+            CloudAction::Computer | CloudAction::PutIn(_) => cloud::Purpose::Download,
         };
         let tone = entry.tone.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -4000,6 +4019,15 @@ impl App {
         bytes: Vec<u8>,
     ) {
         match action {
+            CloudAction::PutIn(slot) => {
+                // Kept first, so the slot is written from the library and the
+                // pedal never holds a tone the library does not know.
+                self.apply_cloud_artifact(entry, CloudAction::Computer, bytes.clone());
+                let hash = library::hash_of(&bytes);
+                if library::meta_of(&hash).is_some() {
+                    self.put_to(slot, vec![(hash, entry.tone.summary.name.clone())]);
+                }
+            }
             CloudAction::Computer => {
                 let view = self.lib_showing;
                 let kind = if voidx_proto::Preset::parse(&bytes).is_ok() {
@@ -4276,6 +4304,7 @@ impl App {
             },
             row_height: library_pane::TABLE_ROW,
             header_height: library_pane::TABLE_HEADER,
+            draggable: true,
             ..Default::default()
         };
         for &row in &source_rows {
@@ -4393,6 +4422,11 @@ impl App {
 
         let did = table::show(ui, "cloud-library", &mut grid);
         self.apply_column_visibility(did.column_visibility);
+        if let Some(row) = did.drag_started {
+            if let Some(&entry) = rows.get(row) {
+                self.start_drag(ui.ctx(), dnd::Dragged::Cloud(entry));
+            }
+        }
         // The feed stops after page one. Only approaching the end of the rows
         // already painted asks TonePush for another page; leaving this tab does
         // not cancel that request, and returning does not restart the feed.
@@ -4692,6 +4726,7 @@ impl App {
             nothing_after_icon: "beside a preset to save it.",
             row_height: library_pane::TABLE_ROW,
             header_height: library_pane::TABLE_HEADER,
+            draggable: true,
             ..Default::default()
         };
         for &i in &rows {
@@ -4792,6 +4827,10 @@ impl App {
 
         let did = table::show(ui, "library", &mut grid);
         self.apply_column_visibility(did.column_visibility);
+        if let Some(row) = did.drag_started {
+            let dragged = self.dragged_tones(rows[row]);
+            self.start_drag(ui.ctx(), dragged);
+        }
         self.lib_draft_edit(&grid, &did, &rows, &shown);
 
         if let Some(col) = did.sort {

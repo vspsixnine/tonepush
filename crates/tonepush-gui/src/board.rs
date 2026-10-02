@@ -989,6 +989,7 @@ impl App {
             .show(root, |ui| {
                 notch = self.board(ui, &g, tier);
             });
+        self.board_rect = Some(panel.response.rect);
         board_edge(root, panel.response.rect, notch);
     }
 

@@ -220,3 +220,40 @@ Scenes: `hx-cloud-audition` (sheet 04), `hx-setlist-audition` (sheet 23) and
   it.
 - A TonePush tone heard with no pedal is not shown: showing it would mean
   fetching it, and TonePush would count that as a play nobody heard.
+
+## Stage 7: drag and drop
+
+Every pair in sheet 15 is a drag: library tones (one or several) onto a
+preset, the board, the Cloud tab or a setlist's slot; a TonePush tone onto a
+preset, the Tones tab or the board; a preset onto the Tones tab, another
+preset (a copy, a move with Shift) or the Cloud tab; the deck's name onto the
+Tones tab; a setlist onto the presets; one of its slots onto a preset or the
+Tones tab; the Presets heading onto the Setlists tab or a setlist; and tone
+files from outside onto the Tones tab or a preset. What a drop does is asked
+of one function, `App::drop_outcome`, which the ghost, the rows and the tabs
+all read, and the drop itself calls the acts the menus and keys use; a drop
+that writes a slot goes through the question of stage 5. Tones dropped into a
+setlist's slots compose its next version (decision 7), the version before kept
+as it was.
+
+While something is dragged the presets read as destinations, as sending
+always made them, with Replace or Put it here on the row under the pointer;
+the tabs that take it wear a faint dashed edge, the one under the pointer
+turns into what the drop does (Keep in Tones), and the rest dim; the board
+takes a dashed edge and "Drop on the board to hear it"; a setlist dragged over
+the presets marks the whole list. The ghost carries the marker, the name and
+the chain, the outcome or the reason not, and a count for several.
+
+Scenes: `hx-drag-tone-to-slot` (sheet 08), `hx-drag-preset-to-tones` (sheet
+10), `hx-drag-cloud-to-slot` (sheet 11), `hx-drag-several` and
+`hx-drag-setlist` (sheet 13), at 1280 × 760.
+
+- Copying a preset to another slot reads it from the pedal's automatic
+  backup, so a preset with unsaved changes says to save it first. On a
+  StompStation PRO, copying presets between slots stays with its menu's Copy
+  and Paste, and keeping a preset with its menu, as before.
+- Where a file dragged in from outside lands depends on the pointer while it
+  hovers, which some desktops do not report; there, it opens its preview as
+  before.
+- The ghost sits below and to the right of the pointer rather than above it,
+  so it never covers the row the pointer is on.

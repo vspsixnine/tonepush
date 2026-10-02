@@ -191,6 +191,8 @@ pub struct Grid {
     /// The row playing on the pedal, tinted and outlined in amber, and
     /// whether it is still on its way.
     pub playing: Option<(usize, bool)>,
+    /// Rows can be dragged out of the table.
+    pub draggable: bool,
 }
 
 impl Grid {
@@ -268,6 +270,8 @@ pub struct Did {
     /// with paged backing data use this to prefetch shortly before the reader
     /// reaches the rows they have not loaded yet.
     pub last_visible: Option<usize>,
+    /// A row started being dragged out of the table.
+    pub drag_started: Option<usize>,
 }
 
 /// Draw it, and answer with what happened.
@@ -732,7 +736,15 @@ impl egui_table::TableDelegate for Delegate<'_> {
         // over the cell afterwards quietly takes the clicks meant for what is
         // inside it: it is why pressing Push in the library only ever selected
         // the row.
-        let whole = ui.interact(rect, ui.id().with(("cell", row, col)), Sense::click());
+        let sense = if self.grid.draggable {
+            Sense::click_and_drag()
+        } else {
+            Sense::click()
+        };
+        let whole = ui.interact(rect, ui.id().with(("cell", row, col)), sense);
+        if whole.drag_started() && visible {
+            self.did.drag_started = Some(row);
+        }
 
         let Some(content) = self.grid.rows.get(row).and_then(|r| r.get(col)) else {
             return;

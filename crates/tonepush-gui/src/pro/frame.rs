@@ -19,6 +19,10 @@ pub(crate) enum Picked {
     Slot(usize),
     /// Stop sending.
     Cancel,
+    /// A preset was dragged.
+    Drag(usize),
+    /// The Presets heading was dragged: the whole pedal.
+    DragPedal,
     /// A preset was clicked while the pedal's own pages showed: back to the
     /// editor.
     Back,
@@ -169,6 +173,9 @@ impl Panel {
         if asked.favourites {
             self.show_favorites_only = !self.show_favorites_only;
         }
+        if asked.drag && self.online {
+            picked = Some(Picked::DragPedal);
+        }
         // Asked through the app, which keeps every capture of the pedal
         // in one place.
         if asked.capture {
@@ -177,6 +184,8 @@ impl Panel {
 
         let mode = if sending.is_some() {
             RowMode::Sending
+        } else if self.dropping {
+            RowMode::Dropping
         } else {
             RowMode::Normal
         };
@@ -231,6 +240,12 @@ impl Panel {
                     picked = Some(Picked::Slot(index));
                 }
                 return;
+            }
+            if mode == RowMode::Dropping {
+                return;
+            }
+            if response.drag_started() && !row.empty {
+                picked = Some(Picked::Drag(index));
             }
             // An empty slot has nothing to load and nothing to act on.
             if row.empty {

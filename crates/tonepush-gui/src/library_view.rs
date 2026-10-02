@@ -1976,6 +1976,7 @@ impl App {
         let mut picked = None;
         let mut remove = None;
         let mut capture = false;
+        let mut dragged = None;
         egui::ScrollArea::vertical()
             .id_salt("setlist-cards")
             .auto_shrink([false, false])
@@ -2008,6 +2009,22 @@ impl App {
                             let selected = self.lib_setlist == Some(index);
                             let response =
                                 self.setlist_card(ui, &setlist, states.as_deref(), selected);
+                            if response.drag_started() {
+                                dragged = Some(index);
+                            }
+                            if self.dragged(ui.ctx()).is_some() {
+                                self.drop_zone(response.rect, crate::dnd::Target::Setlist(index));
+                                if self.drops.hover == Some(crate::dnd::Target::Setlist(index)) {
+                                    theme::paint::dashed_rect(
+                                        ui.painter(),
+                                        response.rect.shrink(0.75),
+                                        9.5,
+                                        Stroke::new(1.5, theme::accent_line()),
+                                        4.0,
+                                        3.0,
+                                    );
+                                }
+                            }
                             if response.clicked() {
                                 picked = Some(index);
                             }
@@ -2080,6 +2097,9 @@ impl App {
                         }
                     });
             });
+        if let Some(index) = dragged {
+            self.start_drag(ui.ctx(), crate::dnd::Dragged::Setlist(index));
+        }
         if let Some(index) = picked {
             self.select_setlist_entry(index);
         }
@@ -2110,7 +2130,8 @@ impl App {
         selected: bool,
     ) -> Response {
         let width = ui.available_width();
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 84.0), Sense::click());
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(width, 84.0), Sense::click_and_drag());
         if selected {
             ui.painter()
                 .rect_filled(rect, CornerRadius::same(10), theme::hover());
@@ -2588,6 +2609,17 @@ impl App {
         let only = self.setlist_only_differing;
         let mut send = None;
         let mut play = None;
+        let mut drag_slot = None;
+        let mut drop_zones = Vec::new();
+        let dragging = self.dragged(ui.ctx()).is_some();
+        let setlist_index = self
+            .lib_setlists
+            .iter()
+            .position(|(_, known)| {
+                known.series == setlist.series && known.version == setlist.version
+            })
+            .or(self.lib_setlist)
+            .unwrap_or(0);
         let pedal = self.pedal_slots();
         for bank in 0..banks {
             let slots: Vec<usize> = (bank * per_bank..((bank + 1) * per_bank).min(total)).collect();
@@ -2621,11 +2653,22 @@ impl App {
                     rect,
                     ui.id().with(("bank-slot", *slot)),
                     if entry.is_some() {
-                        Sense::click()
+                        Sense::click_and_drag()
                     } else {
                         Sense::hover()
                     },
                 );
+                let target = crate::dnd::Target::SetlistSlot {
+                    setlist: setlist_index,
+                    slot: *slot,
+                };
+                if dragging {
+                    drop_zones.push((rect, target));
+                }
+                if entry.is_some() && response.drag_started() {
+                    drag_slot = Some(*slot);
+                }
+                let dropping_here = dragging && self.drops.hover == Some(target);
                 let hot = state.is_some_and(SlotState::differs);
                 // The slot playing on the pedal: amber, with a speaker.
                 let heard = entry.is_some_and(|entry| {
@@ -2635,7 +2678,7 @@ impl App {
                         slot: *slot as i64,
                     })
                 });
-                let fill = if heard {
+                let fill = if heard || dropping_here {
                     theme::accent_soft()
                 } else if hot {
                     theme::mix(theme::panel(), theme::hot(), 0.07)
@@ -2660,7 +2703,7 @@ impl App {
                         fill,
                         Stroke::new(
                             1.0,
-                            if heard {
+                            if heard || dropping_here {
                                 theme::accent_line()
                             } else if hot {
                                 theme::alpha(theme::hot(), 0.75)
@@ -2773,6 +2816,18 @@ impl App {
             ui.add_space(gap - ui.spacing().item_spacing.y);
         }
         let _ = tier;
+        for (rect, target) in drop_zones {
+            self.drop_zone(rect, target);
+        }
+        if let Some(slot) = drag_slot {
+            self.start_drag(
+                ui.ctx(),
+                crate::dnd::Dragged::SetlistSlot {
+                    setlist: setlist_index,
+                    slot,
+                },
+            );
+        }
         if let Some((slot, entry)) = play {
             self.hearing.arrows = crate::audition::Arrows::Presets;
             self.audition_setlist_slot(&setlist.name, slot as i64, &entry);

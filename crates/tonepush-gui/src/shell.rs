@@ -144,6 +144,9 @@ pub(crate) enum RowMode {
     Normal,
     /// A tone is on its way to the pedal: every row is a destination.
     Sending,
+    /// Something is dragged that a slot would take: every row is a
+    /// destination, and the one under the pointer says what the drop does.
+    Dropping,
 }
 
 /// Whether an HX slot holds nothing: a blank name, or the factory default.
@@ -159,12 +162,19 @@ pub(crate) fn hx_slot_is_empty(name: &str) -> bool {
 /// are amber and the row under the pointer is the drop target.
 pub(crate) fn preset_row(ui: &mut Ui, row: &PresetRow, mode: RowMode) -> Response {
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, ROW_HEIGHT), Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, ROW_HEIGHT), Sense::click_and_drag());
     if !ui.is_rect_visible(rect) {
         return response;
     }
-    let sending = mode == RowMode::Sending;
-    let hovered = response.hovered();
+    let sending = matches!(mode, RowMode::Sending | RowMode::Dropping);
+    // A drag in flight takes egui's hover; a drop target goes by where the
+    // pointer is.
+    let hovered = if mode == RowMode::Dropping {
+        response.contains_pointer()
+    } else {
+        response.hovered()
+    };
     let corner = CornerRadius::same(7);
     if (sending && hovered) || row.target {
         ui.painter().rect_filled(rect, corner, theme::accent_soft());
@@ -542,6 +552,8 @@ pub(crate) fn sending_card(ui: &mut Ui, name: &str) -> bool {
 pub(crate) struct HeaderAsked {
     pub favourites: bool,
     pub capture: bool,
+    /// The heading was dragged: the whole pedal, to keep as a setlist.
+    pub drag: bool,
 }
 
 /// PRESETS, how many slots the library holds (or, while sending, how many are
@@ -556,7 +568,8 @@ pub(crate) fn presets_header(
     let mut asked = HeaderAsked::default();
     ui.add_space(6.0);
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::hover());
+    let (rect, heading) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::drag());
+    asked.drag = heading.drag_started();
     // Everything sits on the row's lower edge, 6 points up.
     let y = rect.bottom() - 6.0 - 7.0;
     let caption = ui.painter().layout_job(theme::paint::spaced(
@@ -924,12 +937,17 @@ pub(crate) fn deck_title(
         return None;
     }
     let title = title_galley(ui, name, size, theme::text(), width);
+    // A drag on the name carries what plays, to keep it as it sounds now.
     let sense = if can_rename {
-        Sense::click()
+        Sense::click_and_drag()
     } else {
-        Sense::hover()
+        Sense::drag()
     };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(title.size().x, size + 4.0), sense);
+    if response.drag_started() {
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(title_dragged(), true));
+    }
     paint_line(ui, title, rect.left(), rect.center().y);
     let response = if can_rename {
         response.on_hover_text("Click the name to rename the preset")
@@ -942,6 +960,17 @@ pub(crate) fn deck_title(
         *renaming = Some(name.to_owned());
     }
     None
+}
+
+/// Where the deck's name says it was dragged this frame.
+fn title_dragged() -> egui::Id {
+    egui::Id::new("deck-title-dragged")
+}
+
+/// Whether the deck's name was dragged this frame, once.
+pub(crate) fn take_title_drag(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<bool>(title_dragged()))
+        .unwrap_or(false)
 }
 
 /// The tempo: the reading in tabular figures with BPM after it, typed into
@@ -1605,6 +1634,8 @@ impl App {
                         if self.pro_active() {
                             let sending = self.sending.as_ref().map(crate::put::Sending::words);
                             let on_pages = self.page == Page::Pedal;
+                            self.pro.dropping = self.dropping_on_slots(ui.ctx());
+                            self.presets_rect = Some(ui.available_rect_before_wrap());
                             let picked = self.pro.sidebar(
                                 ui,
                                 &self.library_lookup,
@@ -1617,6 +1648,15 @@ impl App {
                                     self.finish_sending(slot as i64);
                                 }
                                 Some(crate::pro::Picked::Cancel) => self.sending = None,
+                                Some(crate::pro::Picked::Drag(slot)) => {
+                                    self.start_drag(
+                                        ui.ctx(),
+                                        crate::dnd::Dragged::Preset(slot as i64),
+                                    );
+                                }
+                                Some(crate::pro::Picked::DragPedal) => {
+                                    self.start_drag(ui.ctx(), crate::dnd::Dragged::Pedal);
+                                }
                                 Some(crate::pro::Picked::Back) => self.go_to(Page::Edit),
                                 None => {}
                             }
@@ -1832,6 +1872,10 @@ impl App {
         if asked.capture {
             self.capture_pedal(None);
         }
+        if asked.drag && live {
+            self.start_drag(ui.ctx(), crate::dnd::Dragged::Pedal);
+        }
+        self.presets_rect = Some(ui.available_rect_before_wrap());
         self.hx_preset_list(ui);
     }
 
@@ -1839,9 +1883,12 @@ impl App {
         let rows = self.hx_rows();
         let mode = if self.sending.is_some() {
             RowMode::Sending
+        } else if self.dropping_on_slots(ui.ctx()) {
+            RowMode::Dropping
         } else {
             RowMode::Normal
         };
+        let mut dragged = None;
         let empty = if self.show_favorites_only && self.hx_total() > 0 {
             "No favourites yet. Add one from a preset's menu."
         } else {
@@ -1890,6 +1937,12 @@ impl App {
                     pick = Some((index, response.rect));
                 }
                 return;
+            }
+            if mode == RowMode::Dropping {
+                return;
+            }
+            if response.drag_started() && !row.empty {
+                dragged = Some(index);
             }
             if response.clicked() {
                 load = Some(index);
@@ -2012,6 +2065,9 @@ impl App {
             }
         }
         self.row_rects = row_rects;
+        if let Some(slot) = dragged {
+            self.start_drag(ui.ctx(), crate::dnd::Dragged::Preset(slot));
+        }
         if let Some((slot, _)) = pick {
             self.finish_sending(slot);
         }

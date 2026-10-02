@@ -47,6 +47,20 @@ The pedal mark at the start of a tone's row, **Put in a slot…** in its details
 
 On a StompStation PRO with no checked backup yet, the question offers **Back up, then put it in 05B**: TonePush backs the pedal up, which takes about 40 seconds, and writes the slot once the backup is checked. On firmware TonePush has not verified for saving, nothing is written to a slot: Keep's menu says so, and Keep in the loaded slot still plays the tone until you load another preset.
 
+### Drag what you see
+
+Every drag is a shortcut for something a menu or a key also does, and the ghost under the pointer says what the drop will do, or why it will not: "Replace 05B Chime Clean", "The HX Stomp cannot play a StompStation PRO tone".
+
+- **Tones from your library** onto a preset put them in that slot, several in a run from it; onto the board they play, as a click does; onto the **Cloud** tab one is published; onto a setlist's slot they make that setlist's next version, with the tones in it.
+- **A TonePush tone** onto a preset is kept in your library and then put in that slot; onto the **Tones** tab it is kept; onto the board it plays.
+- **A preset** onto the **Tones** tab is kept in your library; onto another preset it is copied there, and moved with Shift held; onto the **Cloud** tab it is kept, then published.
+- **The preset's name** at the top of the window, onto the **Tones** tab, keeps it as it sounds now, edits and all.
+- **A setlist** onto the presets puts the whole of it on the pedal, after the question that always asks. **One of its slots** onto a preset writes that one preset there; onto the **Tones** tab, keeps it in your library.
+- **The Presets heading**, the whole pedal, onto the **Setlists** tab keeps it as a new setlist; onto a setlist, as that setlist's next version.
+- **A tone file** from outside TonePush onto the **Tones** tab is imported; onto a preset, it is put in that slot.
+
+While something is dragged, the presets read as destinations and the library's tabs say whether they take it, even folded. A drop that writes the pedal's memory asks first, the way putting a tone in a slot does. Esc lets go of a drag.
+
 ### 3. Build a setlist
 
 Get the pedal holding the presets you want, in the order you want them, then click the computer icon at the top of the preset list (**Keep every preset on the pedal, in order, as a setlist**), or **Keep the whole pedal as a setlist** on the library's Setlists tab. That records every slot and what is in it; name it, and it opens on that tab.
