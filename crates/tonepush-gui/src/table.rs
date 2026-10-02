@@ -41,6 +41,8 @@ pub enum Cell {
     Text(String),
     /// Text in the second voice: derived, not typed, and not editable.
     Dim(String),
+    /// Text that asks for attention, in the hot voice: "v2 · library has v3".
+    Hot(String),
     /// A tone's name, in the row's strongest weight, with a quieter tag after
     /// it for a tone from another pedal family ("PRO").
     Name { text: String, tag: Option<String> },
@@ -85,7 +87,7 @@ impl Cell {
     /// header gathers everything that needs doing.
     fn key(&self) -> SortKey {
         match self {
-            Cell::Text(t) | Cell::Dim(t) => SortKey::Text(t.to_lowercase()),
+            Cell::Text(t) | Cell::Dim(t) | Cell::Hot(t) => SortKey::Text(t.to_lowercase()),
             Cell::Name { text, .. } | Cell::Pair { text, .. } => SortKey::Text(text.to_lowercase()),
             Cell::Value { key, .. } | Cell::Chain { key, .. } => SortKey::Text(key.clone()),
             Cell::Stars { rating, .. } => SortKey::Text(rating.to_string()),
@@ -802,6 +804,16 @@ impl egui_table::TableDelegate for Delegate<'_> {
                     text.clone(),
                     theme::regular(theme::BODY),
                     theme::muted(),
+                    room,
+                );
+                shell::paint_line(ui, galley, left, y);
+            }
+            Cell::Hot(text) => {
+                let galley = shell::elided(
+                    ui,
+                    text.clone(),
+                    theme::regular(theme::BODY),
+                    theme::hot(),
                     room,
                 );
                 shell::paint_line(ui, galley, left, y);

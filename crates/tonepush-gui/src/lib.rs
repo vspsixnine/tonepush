@@ -25,9 +25,11 @@ pub mod library;
 mod library_pane;
 mod library_view;
 mod menus;
+mod mine;
 mod pages;
 mod pane;
 mod pro;
+mod publish;
 mod put;
 #[cfg(test)]
 mod screenshots;
@@ -212,6 +214,8 @@ struct Signing {
 struct PublishingJob {
     hash: String,
     name: String,
+    /// The tone's stable identity, for the record of what was published.
+    series: String,
     answer: std::sync::mpsc::Receiver<Result<cloud::ToneDetails, cloud::PublishError>>,
 }
 
@@ -554,8 +558,14 @@ pub struct App {
     /// A setlist's version waiting on an answer about being deleted.
     confirm_setlist_delete: Option<usize>,
     /// Tones waiting to be published once the one being published is
-    /// answered, by hash.
-    publish_queue: std::collections::VecDeque<String>,
+    /// answered.
+    publish_queue: std::collections::VecDeque<publish::Queued>,
+    /// The publish sheet's question, while it is asked.
+    publish_ask: Option<publish::Asked>,
+    /// What this library published to TonePush, by each tone's series.
+    published: std::collections::BTreeMap<String, library::Published>,
+    /// The Cloud's Mine.
+    mine: mine::Mine,
     /// Where the board was drawn, for drops on it.
     board_rect: Option<egui::Rect>,
     /// Where the preset list was drawn, for a setlist dropped on it.
@@ -1482,6 +1492,9 @@ impl App {
             preset_menu_by_key: false,
             confirm_setlist_delete: None,
             publish_queue: std::collections::VecDeque::new(),
+            publish_ask: None,
+            published: std::collections::BTreeMap::new(),
+            mine: mine::Mine::default(),
             board_rect: None,
             presets_rect: None,
             row_rects: std::collections::BTreeMap::new(),
@@ -1997,7 +2010,7 @@ impl eframe::App for App {
                 let hash = library::hash_of(&bytes);
                 self.keep_tone(&name, "vxpreset", &bytes, self.pro_origin());
                 if library::meta_of(&hash).is_some() {
-                    self.publish_queue.push_back(hash);
+                    self.ask_to_publish(vec![hash]);
                 }
                 continue;
             }
@@ -2098,6 +2111,12 @@ impl App {
         // site taking a tone.
         self.settle_signing_in();
         self.settle_publishing(&ctx);
+        // What TonePush says of the tones published from here, asked once a
+        // session and again when Mine shows: the details and Mine read it.
+        self.settle_mine();
+        if !self.mine.asked() {
+            self.refresh_mine(&ctx, true);
+        }
         self.settle_cloud_search(&ctx);
         self.settle_cloud_download(&ctx);
         // A tone file dropped on the Tones tab or a preset goes there; any
@@ -2164,6 +2183,7 @@ impl App {
         self.confirm_restore_window(&ctx);
         self.confirm_delete_window(&ctx);
         self.confirm_setlist_delete_window(&ctx);
+        self.publish_window(&ctx);
         self.name_clash_window(&ctx);
         self.save_setlist_window(&ctx);
         self.confirm_switch_window(&ctx);
@@ -2508,7 +2528,7 @@ impl App {
                     self.keep_tone(&name, "hxpreset", &bytes, origin);
                     let hash = library::hash_of(&bytes);
                     if library::meta_of(&hash).is_some() {
-                        self.publish_queue.push_back(hash);
+                        self.ask_to_publish(vec![hash]);
                     }
                 }
                 None => self.problem(
@@ -3363,6 +3383,9 @@ impl App {
     /// Rebuild the library rows from the files and the saved index, keeping the
     /// current selection pinned to its file across the refresh.
     fn refresh_library(&mut self) {
+        // What was published from here comes along: Mine and the publish
+        // sheet read it.
+        self.published = library::published();
         // The setlists come along: they are the same library, and a capture
         // that did not appear until something else refreshed would read as a
         // capture that failed.
@@ -4978,7 +5001,7 @@ impl App {
                         Some(portable) => ui
                             .ctx()
                             .open_url(egui::OpenUrl::new_tab(cloud::tone_url(&portable))),
-                        None => self.start_publishing(entry, ui.ctx()),
+                        None => self.ask_to_publish(vec![hash]),
                     }
                 }
             }
@@ -5133,53 +5156,42 @@ impl App {
         });
     }
 
-    /// Publish this local Tone under its Song.
-    ///
-    /// A new Song is created first, then the publishable preset is attached as its
-    /// first device-native Tone. These remain two calls in the cloud client so
-    /// a failed second call can truthfully report the empty Song left behind.
-    fn start_publishing(&mut self, entry: usize, ctx: &egui::Context) {
-        let Some(token) = self.config.token.clone() else {
-            return self.problem("sign in first, and then the cloud will publish".into());
-        };
-        if let Some(publishing) = &self.publishing {
-            return self.problem(format!("{} is already being published", publishing.name));
-        }
-        let (hash, name, request) = match self.publish_request(entry) {
-            Ok(built) => built,
-            Err(why) => return self.problem(why),
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        let ctx = ctx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(cloud::publish(&token, &request));
-            ctx.request_repaint();
-        });
-        self.status.clear();
-        self.publishing = Some(PublishingJob {
-            hash,
-            name,
-            answer: rx,
-        });
-    }
-
     /// What publishing a library tone sends: its Song, and the Tone with its
     /// publishable preset and what the library knows of it. Also the tone's
     /// hash and name, for the job that waits on the answer.
+    ///
+    /// A new Song is created first, then the publishable preset is attached
+    /// as its first device-native Tone; a tone published before goes to the
+    /// Song it has (`publish::publish_with`). `name` is the name it goes
+    /// under on TonePush when that is not the library's.
+    #[cfg(test)]
     fn publish_request(
         &self,
         entry: usize,
+        name: Option<&str>,
+    ) -> Result<(String, String, cloud::PublishRequest), String> {
+        self.publish_revision(entry, None, name)
+    }
+
+    /// The same for one revision of a library tone, its details the tone's:
+    /// an earlier version made current again goes up as its own file.
+    fn publish_revision(
+        &self,
+        entry: usize,
+        revision: Option<&str>,
+        name: Option<&str>,
     ) -> Result<(String, String, cloud::PublishRequest), String> {
         let Some(entry) = self.lib_entries.get(entry) else {
             return Err("that tone is no longer in the library".to_owned());
         };
-        let Some(path) = library::publish_path(&entry.hash) else {
+        let revision = revision.unwrap_or(&entry.hash);
+        let Some(path) = library::publish_path(revision) else {
             return Err(format!("{} has no publishable artifact", entry.name));
         };
         let Ok(artifact) = std::fs::read(&path) else {
             return Err(format!("{} could not be read", entry.name));
         };
-        let pro_tone = library::kind(&entry.hash).as_deref() == Some("vxpreset");
+        let pro_tone = library::kind(revision).as_deref() == Some("vxpreset");
         let catalog_song = !entry.meta.song.trim().is_empty();
         if catalog_song && entry.meta.artist.trim().is_empty() {
             return Err(format!(
@@ -5187,8 +5199,11 @@ impl App {
                 entry.name
             ));
         }
-        let hash = entry.hash.clone();
-        let name = entry.name.clone();
+        let hash = revision.to_owned();
+        let name = name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| entry.name.clone(), str::to_owned);
         let present = |value: &str| {
             let value = value.trim();
             (!value.is_empty()).then(|| value.to_owned())
@@ -5309,7 +5324,7 @@ impl App {
             tone: cloud::CreateToneRequest {
                 creator_name: self.config.account.clone().unwrap_or_default(),
                 tone: cloud::NewTone {
-                    name: entry.name.clone(),
+                    name: name.clone(),
                     series_id: (!entry.series.is_empty()).then(|| entry.series.clone()),
                     description: present(&entry.meta.tone_description),
                     part: present(&entry.meta.part),
@@ -5355,7 +5370,7 @@ impl App {
             // The next tone waiting, if any; a queue that cannot start (no
             // sign-in) is not tried again tone after tone.
             if let Some(next) = self.publish_queue.pop_front() {
-                self.publish_hash(&next, ctx);
+                self.start_queued(next, ctx);
                 if self.publishing.is_none() {
                     self.publish_queue.clear();
                 }
@@ -5363,6 +5378,7 @@ impl App {
             return;
         };
         let hash = publishing.hash.clone();
+        let series = publishing.series.clone();
         let answer = match publishing.answer.try_recv() {
             Ok(answer) => answer,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
@@ -5375,6 +5391,8 @@ impl App {
         self.publishing = None;
         match answer {
             Ok(tone) => {
+                // Which Tone and Song it is, so its next version goes there.
+                self.record_publish(&series, &hash, &tone);
                 // The Tone POST is authoritative. Fill this row immediately
                 // instead of waiting for a full Song-index walk to reach the
                 // same hash.
@@ -5387,7 +5405,10 @@ impl App {
                     self.cloud_files
                         .get_or_insert_default()
                         .insert(portable.clone());
-                    ctx.open_url(egui::OpenUrl::new_tab(cloud::tone_url(&portable)));
+                    // Its page opens for the last of a run, not for each.
+                    if self.publish_queue.is_empty() {
+                        ctx.open_url(egui::OpenUrl::new_tab(cloud::tone_url(&portable)));
+                    }
                 }
                 self.status.clear();
                 self.note(format!("{} is published as a Tone", tone.summary.name));
@@ -7446,6 +7467,7 @@ mod tests {
         app.publishing = Some(PublishingJob {
             hash: local,
             name: "Numb HX".to_owned(),
+            series: "series-numb".to_owned(),
             answer: received,
         });
 
@@ -9208,7 +9230,7 @@ mod tests {
         app.device = "HX Stomp".into();
         app.firmware = "3.70".into();
 
-        let (_, _, request) = app.publish_request(0).unwrap();
+        let (_, _, request) = app.publish_request(0, None).unwrap();
         assert_eq!(request.tone.tone.device_name.as_deref(), Some("HX Effects"));
         assert_eq!(request.tone.tone.firmware_version.as_deref(), Some("3.80"));
     }

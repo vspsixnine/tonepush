@@ -310,3 +310,52 @@ points apart, as the sheets draw them, where egui's spacing added 6.
   its page" beside Versions; one with a single version says "only this one".
 - A setlist's Publish on TonePush… waits for the server's setlists (S6), in
   stage 11; the menus of your own tones on TonePush come with stages 9 and 11.
+
+## Stage 9: publishing asks first, and Mine with today's API
+
+Publishing asks first, on the sheet of sheet 14: the Song, the Tone, the pedal
+and firmware it is for, who can see it, the account, and for a tone TonePush
+has, the version it becomes ("TonePush has v2 of this tone, downloaded 312
+times. v3 becomes the version people get; v2 stays on its page"), with
+**Publish v3** (Enter). Not signed in, it signs in first with the pairing code,
+as built. Several tones are one sheet and publish one after another, stopping
+at the first that fails; a preset is kept in the library, then asked about.
+
+TonePush's answer is recorded in the library (`published.json`, by each tone's
+series): the stable Tone id and its Song. A later version goes to that Song
+(`PublishSong::Existing`) with the series id, so TonePush revises the Tone
+instead of the editor starting a new Song every time (finding 8); a Tone
+TonePush no longer has starts over, Song first. Tones published before the
+records were kept are found once, in TonePush's feed by name, taking only the
+exact file by this account. What TonePush says of each published tone
+(downloads, its versions and the one people get) is asked once a session and
+again when Mine shows.
+
+Cloud, Mine lists what this library published (sheet 18): "8 tones published
+from this library · 7,817 downloads", who is signed in, and a row per tone with
+its pedal and library marks, marker, name, Song, the version on TonePush ("v2 ·
+library has v3" in the hot voice when the library has moved on), downloads and
+the day it went up. The details say where it is (Your library has v3,
+**Publish v3**; its downloads; public on tonepush.rocks, **Open**; the pedal)
+and list its versions on TonePush, a click on one playing it. A click plays
+it, the arrows step and play, and its menu (sheet 17, "yours, today") offers
+Play, Put in a slot…, Show in your tones, Publish v3 from your library…,
+Rename on TonePush… and Make another version current, both by publishing its
+file again as TonePush's API does today, Open on tonepush.rocks and Copy link.
+The details of a library tone say "TonePush has v2" with **Publish v3…** when
+the library is ahead.
+
+Scenes: `hx-publish` (sheet 14), `hx-publish-several` and `hx-mine` (sheet 18,
+the menu open), at 1280 × 760. Before: `before/stage8-mine` (Mine was a
+sentence and a count of 0), and publishing went up at once, with a new Song
+each time.
+
+- TonePush's answers in these scenes are invented and held in memory; the
+  scenes sign in with an invented token, and the site is not reachable from a
+  screenshot.
+- Making another version current and renaming publish a file this library
+  holds; a version published from elsewhere says "not in this library" in
+  the menu. With the server's editing (stage 11) a rename no longer needs the
+  file.
+- The sheet's "Who can see it" is Everyone here; stage 11 offers Only you when
+  the server can hide a tone.

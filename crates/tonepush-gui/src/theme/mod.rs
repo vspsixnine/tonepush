@@ -911,6 +911,9 @@ icons! {
     ListMusic => "list-music",
     // A tone's address on TonePush, to copy.
     Link => "link",
+    // Who can see a tone on TonePush: everyone, or only you.
+    Globe => "globe",
+    EyeOff => "eye-off",
 }
 
 impl Icon {

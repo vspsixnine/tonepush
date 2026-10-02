@@ -121,7 +121,13 @@ Every time an HX pedal connects, TonePush reads all of it, presets, impulse resp
 
 ## Publishing a Song and Tone
 
-On [TonePush](https://tonepush.rocks), a **Song** is the musical idea: either a catalog song by an Artist or an original. A **Tone** is one playable, device-native preset belonging to that Song. Publishing from the library creates the Song first and then attaches the publishable device artifact (`.hlx` for Line 6 or `.vxpreset` for StompStation PRO) as its first Tone. If adding the Tone fails, the editor says that the empty Song remains instead of pretending the two requests were one transaction. Choose several tones and **Publish 3 on TonePush…** publishes them one after another, stopping at the first that fails. The Tone is listed for the pedal it was kept from and the firmware it was made on, whatever pedal is connected when you publish it.
+On [TonePush](https://tonepush.rocks), a **Song** is the musical idea: either a catalog song by an Artist or an original. A **Tone** is one playable, device-native preset belonging to that Song.
+
+**Publish on TonePush…** (in a tone's menu, its details, or a drop on the **Cloud** tab) asks first. The sheet names the Song, the Tone, the pedal and firmware it is for, who can see it and the account it goes up under, and for a tone already on TonePush the version it becomes: "TonePush has v2 of this tone, downloaded 312 times. v3 becomes the version people get; v2 stays on its page and can still be downloaded." Not signed in, the sheet signs you in first. The Tone is listed for the pedal it was kept from and the firmware it was made on, whatever pedal is connected when you publish it.
+
+The first time, publishing creates the Song and then attaches the publishable device artifact (`.hlx` for Line 6 or `.vxpreset` for StompStation PRO) as its first Tone; if adding the Tone fails, the editor says that the empty Song remains instead of pretending the two requests were one transaction. TonePush's answer is kept in your library (`published.json`), so a later version of the same tone goes to the same Tone under the same Song, as its next version, rather than starting a new Song each time; if TonePush no longer has that Tone, the next publish starts it over. Tones published before the editor kept these records are found once, by name and the exact file, in TonePush's feed. Choose several tones and **Publish 3 on TonePush…** publishes them one after another, stopping at the first that fails. A preset on the pedal is kept in your library first and published from there.
+
+**Cloud, Mine** lists what this library published: each tone's pedal, its Song, the version TonePush gives ("v2 · library has v3" when your library has moved on), its downloads and when it went up, with its versions on TonePush in the details, a click on one playing it. Its menu publishes the library's version, renames it on TonePush, and makes an earlier version current again; the last two publish its file again, which is how TonePush changes a name or the version people get without a new version. **Open on tonepush.rocks** and **Copy link** take you to its page. The keys work there too: the arrows step through it playing each, Space plays or puts back, Ctrl Enter puts one in a slot and F2 renames it on TonePush.
 
 **Export for the web** writes the same information without publishing it: the
 Tone's `.hlx` or `.vxpreset`, plus a `.json` manifest with separate `song` and
@@ -141,6 +147,7 @@ With no pedal connected, a click on a tone in your library shows it where the ed
 |---|---|---|
 | Tones | `~/.local/share/tonepush/library` | One file per tone, the pedal's own document |
 | Setlists | `library/setlists` | Small JSON files naming the tones they play |
+| What you published | `library/published.json` | Which Tone and Song each tone is on TonePush, so its next version goes there |
 | Device backups | `~/.local/share/tonepush/backups` | Whole-pedal HX backups (the copy kept current, and the earlier ones in `history`, each with a `tonepush-why.json` noting why it was set aside) and verified PRO rollback bundles |
 
 On macOS these sit under `~/Library/Application Support`; on Windows, under your profile.

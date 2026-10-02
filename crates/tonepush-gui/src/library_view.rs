@@ -168,7 +168,7 @@ pub(crate) fn difference_words(counts: Differences) -> (String, String) {
 // Small pieces
 
 /// A caption between the sections of an inspector, with the hairline above.
-fn section(ui: &mut Ui, caption: &str) {
+pub(crate) fn section(ui: &mut Ui, caption: &str) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 40.0), Sense::hover());
     ui.painter().hline(
@@ -471,7 +471,7 @@ pub(crate) enum Words {
 }
 
 /// A where-row's words as one line, each part in its voice.
-fn where_job(parts: &[(&str, Words)], width: f32) -> egui::text::LayoutJob {
+pub(crate) fn where_job(parts: &[(&str, Words)], width: f32) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob::default();
     for (text, voice) in parts {
         let (font, colour) = match voice {
@@ -503,7 +503,7 @@ fn where_job(parts: &[(&str, Words)], width: f32) -> egui::text::LayoutJob {
 /// One version in a list: its number and date, what it is at the right,
 /// and a click anywhere on it that plays it. The one playing says so, or
 /// that it is on its way. Answers whether it was clicked.
-fn version_row(
+pub(crate) fn version_row(
     ui: &mut Ui,
     number: &str,
     date: &str,
@@ -626,7 +626,7 @@ fn where_line(
 }
 
 /// A hairline across the inspector, its padding included.
-fn rule(ui: &mut Ui) {
+pub(crate) fn rule(ui: &mut Ui) {
     let width = ui.available_width();
     let (place, _) = ui.allocate_exact_size(Vec2::new(width, 9.0), Sense::hover());
     ui.painter().hline(
@@ -795,29 +795,6 @@ impl App {
         self.lib_follows = true;
     }
 
-    /// How many tones this library published, for the Cloud's Mine.
-    pub(crate) fn mine_count(&self) -> usize {
-        0
-    }
-
-    /// Cloud, Mine: what this library published.
-    pub(crate) fn mine_view(&mut self, ui: &mut Ui, _tier: Tier) {
-        let rect = ui.max_rect();
-        let words = if self.config.token.is_some() {
-            "Tones you publish from this library appear here, with their downloads and versions."
-        } else {
-            "Sign in to TonePush, and the tones you publish from this library appear here."
-        };
-        crate::pane::centred(
-            ui,
-            words,
-            theme::regular(theme::BODY),
-            theme::muted(),
-            Pos2::new(rect.center().x, rect.top() + 48.0),
-            rect.width() - 40.0,
-        );
-    }
-
     /// The tags to filter tones by, and the order of the Cloud's, as one
     /// menu beside the search. Called inside a right-to-left layout.
     pub(crate) fn filter_button(&mut self, ui: &mut Ui) {
@@ -980,7 +957,7 @@ impl App {
 
     /// The slot on the pedal holding a tone's very bytes, when the pedal
     /// says.
-    fn slot_holding(&self, hash: &str) -> Option<i64> {
+    pub(crate) fn slot_holding(&self, hash: &str) -> Option<i64> {
         if self.pro_active() {
             let (hashes, _) = self.pro.pedal_slots()?;
             return hashes
@@ -1204,6 +1181,53 @@ impl App {
             .publishing
             .as_ref()
             .is_some_and(|p| p.hash == entry.hash);
+        // Published from here: which version TonePush gives, and whether
+        // the library has moved on since.
+        let on = (!publishing)
+            .then(|| self.on_tonepush(&entry.hash))
+            .flatten();
+        if let Some((current, file)) = on
+            .as_ref()
+            .and_then(|on| Some((on.versions()?.0, on.details.as_ref()?.file_sha256.clone()?)))
+        {
+            let portable = self
+                .portable_hashes
+                .get(&entry.hash)
+                .cloned()
+                .or_else(|| library::portable_hash(&entry.hash));
+            let version = format!("v{current}");
+            if portable.as_deref() == Some(file.as_str()) {
+                let open = where_row(
+                    ui,
+                    Icon::Cloud,
+                    theme::text_soft(),
+                    &[("On TonePush as ", Words::Soft), (&version, Words::Bold)],
+                    Some("Open"),
+                );
+                if open {
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::new_tab(crate::cloud::tone_url(&file)));
+                }
+            } else {
+                let next = format!(
+                    "Publish v{}…",
+                    on.as_ref()
+                        .and_then(|on| on.versions())
+                        .map_or(current + 1, |(_, n)| n + 1)
+                );
+                let publish = where_row(
+                    ui,
+                    Icon::CloudUpload,
+                    theme::hot(),
+                    &[("TonePush has ", Words::Soft), (&version, Words::Hot)],
+                    Some(&next),
+                );
+                if publish {
+                    self.ask_to_publish(vec![entry.hash.clone()]);
+                }
+            }
+            return;
+        }
         match (publishing, self.cloud_sync(&entry.hash)) {
             (true, _) => {
                 where_row(
@@ -1620,7 +1644,8 @@ impl App {
         }
     }
 
-    /// Publish a tone, or open it on TonePush when it is there already.
+    /// Publish a tone, after the sheet asks, or open it on TonePush when it
+    /// is there already.
     pub(crate) fn publish_or_open(&mut self, entry: usize, ctx: &egui::Context) {
         let Some(hash) = self.lib_entries.get(entry).map(|e| e.hash.clone()) else {
             return;
@@ -1635,7 +1660,7 @@ impl App {
             Some(portable) => {
                 ctx.open_url(egui::OpenUrl::new_tab(crate::cloud::tone_url(&portable)));
             }
-            None => self.start_publishing(entry, ctx),
+            None => self.ask_to_publish(vec![hash]),
         }
     }
 

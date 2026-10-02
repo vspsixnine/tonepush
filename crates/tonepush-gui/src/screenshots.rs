@@ -156,10 +156,16 @@ enum Scene {
     HxMenuPreset,
     /// The StompStation PRO's loaded preset's menu.
     ProMenuPreset,
+    /// Slapback Twang, on TonePush as v2, about to be published as v3.
+    HxPublish,
+    /// Three tones about to be published at once.
+    HxPublishSeveral,
+    /// Cloud, Mine: what this library published, Slapback Twang's menu open.
+    HxMine,
 }
 
 impl Scene {
-    const ALL: [Scene; 59] = [
+    const ALL: [Scene; 62] = [
         Scene::HxEdit,
         Scene::ProEdit,
         Scene::NoDevice,
@@ -219,6 +225,9 @@ impl Scene {
         Scene::HxMenuCloud,
         Scene::HxMenuPreset,
         Scene::ProMenuPreset,
+        Scene::HxPublish,
+        Scene::HxPublishSeveral,
+        Scene::HxMine,
     ];
 
     fn name(self) -> &'static str {
@@ -282,6 +291,9 @@ impl Scene {
             Scene::HxMenuCloud => "hx-menu-cloud",
             Scene::HxMenuPreset => "hx-menu-preset",
             Scene::ProMenuPreset => "pro-menu-preset",
+            Scene::HxPublish => "hx-publish",
+            Scene::HxPublishSeveral => "hx-publish-several",
+            Scene::HxMine => "hx-mine",
         }
     }
 
@@ -315,6 +327,7 @@ impl Scene {
                 slot: 4,
             }),
             Scene::HxMenuCloud => Some(MenuFor::Cloud(0)),
+            Scene::HxMine => app.mine.selected.map(MenuFor::Mine),
             _ => None,
         }
     }
@@ -641,6 +654,30 @@ impl Scene {
                 app.clipboard = Some(("Chime Clean".to_owned(), vec![0; 4]));
             }
             Scene::ProMenuPreset => pro(app),
+            Scene::HxPublish | Scene::HxPublishSeveral => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                mine_fixture(app);
+                app.lib_showing = crate::LibraryView::Tones;
+                let index = tone_named(app, "Slapback Twang");
+                app.choose_tone(index);
+                app.lib_reveal = true;
+                let hashes = if self == Scene::HxPublish {
+                    vec![app.lib_entries[index].hash.clone()]
+                } else {
+                    ["Slapback Twang", "Surf Spring", "Tape Echo Clean"]
+                        .iter()
+                        .map(|name| app.lib_entries[tone_named(app, name)].hash.clone())
+                        .collect()
+                };
+                app.ask_to_publish(hashes);
+            }
+            Scene::HxMine => {
+                hx_stomp(app);
+                app.library_device_filter = None;
+                mine_fixture(app);
+                tall_pane(app);
+            }
             Scene::HxDragSetlist => {
                 hx_stomp(app);
                 app.lib_showing = crate::LibraryView::Setlists;
@@ -1220,6 +1257,8 @@ impl Demo {
                 // setlist has no keyboard of its own, so where it is drawn.
                 let at = match self.scene {
                     Scene::HxMenuSlot => egui::pos2(900.0, 708.0),
+                    // Where the sheet's pointer is, over the table's right.
+                    Scene::HxMine => egui::pos2(533.0, 470.0),
                     _ => app.menu_anchor.unwrap_or(egui::pos2(400.0, 600.0)),
                 };
                 app.open_row_menu(ui.ctx(), what, at);
@@ -1491,6 +1530,105 @@ fn library(app: &mut App) {
     // The setlists are written against the pedal's own presets, so they are
     // made with the HX Stomp's fixture; see `setlists`.
     app.lib_setlists = Vec::new();
+}
+
+/// What this library published, as sheet 18 lists it: eight tones with
+/// their downloads, the day each went up and the version TonePush gives,
+/// Slapback Twang behind the library by a version. TonePush's answers are
+/// held in memory; the account's token is an invented string, and the site
+/// is not reachable from a screenshot, so nothing reaches any account.
+fn mine_fixture(app: &mut App) {
+    // Name | downloads | day published in September | version | versions.
+    const MINE: [&str; 8] = [
+        "Glass Clean|2047|10|1|1",
+        "Velvet Drive|1630|28|4|4",
+        "Plexi Crunch|1284|12|2|2",
+        "Brown Lead|980|11|3|3",
+        "Worship Pad|721|16|2|2",
+        "Dream Pop|455|23|1|1",
+        "Big Room Lead|388|22|2|2",
+        "Slapback Twang|312|17|2|2",
+    ];
+    app.config.token = Some("invented-screenshot-token".to_owned());
+    let field = |row: &'static str, index: usize| row.split('|').nth(index).unwrap_or_default();
+    for (n, row) in MINE.iter().enumerate() {
+        let name = field(row, 0);
+        let number = |index: usize| field(row, index).parse::<u64>().unwrap_or(0);
+        let (downloads, day, version, versions) = (number(1), number(2), number(3), number(4));
+        let entry = app.lib_entries[tone_named(app, name)].clone();
+        let id = 9100 + n as i64;
+        let song_id = 9200 + n as i64;
+        let portable = crate::library::portable_hash(&entry.hash).unwrap_or_default();
+        // TonePush gives the library's file, except for Slapback Twang,
+        // whose v3 is not up yet.
+        let file = if name == "Slapback Twang" {
+            "d".repeat(64)
+        } else {
+            portable
+        };
+        let published = format!("2026-09-{day:02}T12:00:00Z");
+        let mut json = crate::cloud::tests::tone_json(id, song_id, &entry.meta.song);
+        json["name"] = name.into();
+        json["creator"] = "Noa Calder".into();
+        json["file_sha256"] = file.clone().into();
+        json["installs_count"] = downloads.into();
+        json["downloads_count"] = downloads.into();
+        json["version_number"] = version.into();
+        json["versions_count"] = versions.into();
+        json["created_at"] = published.clone().into();
+        json["updated_at"] = published.clone().into();
+        json["device"]["name"] = entry.meta.pedal.clone().into();
+        json["firmware_version"] = entry.firmware.clone().into();
+        if entry.meta.song == "Original" || entry.meta.song.is_empty() {
+            json["song"]["kind"] = "original".into();
+            json["song"]["title"] = name.into();
+            json["song"]["artist"] = serde_json::Value::Null;
+        } else {
+            json["song"]["kind"] = "song".into();
+            json["song"]["title"] = entry.meta.song.clone().into();
+            json["song"]["artist"] = entry.meta.artist.clone().into();
+        }
+        json["versions"] = (1..=versions)
+            .map(|number| {
+                serde_json::json!({
+                    "number": number,
+                    "current": number == version,
+                    "file_sha256": if number == version {
+                        file.clone()
+                    } else {
+                        format!("{number}").repeat(64)
+                    },
+                    "created_at": format!(
+                        "2026-09-{:02}T12:00:00Z",
+                        day.saturating_sub(8 * (versions - number)).max(1)
+                    ),
+                    "download": {"artifact": format!("/tones/{id}/versions/{number}/artifact")},
+                })
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let details: crate::cloud::ToneDetails =
+            serde_json::from_value(json).expect("an invented TonePush answer");
+        let record = crate::library::Published {
+            tone_id: id,
+            song_id,
+            hash: entry.hash.clone(),
+            name: name.to_owned(),
+            at: published,
+        };
+        // Kept as the library keeps it, so a refresh of the library finds it.
+        crate::library::record_published(&entry.series, record.clone())
+            .expect("the scratch library takes a record");
+        app.published.insert(entry.series.clone(), record);
+        app.mine.details.insert(id, Ok(details));
+        if name == "Slapback Twang" {
+            app.mine.selected = Some(id);
+        }
+    }
+    app.mine.mark_asked();
+    app.lib_showing = crate::LibraryView::Cloud;
+    app.pane.cloud_scope = crate::library_pane::CloudScope::Mine;
+    app.hearing.arrows = crate::audition::Arrows::Mine;
 }
 
 /// TonePush's public feed for the HX Stomp, as the design's mockups list it:

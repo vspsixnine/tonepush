@@ -1862,13 +1862,13 @@ impl Multipart {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
 
-    fn song_json(id: i64, title: &str) -> serde_json::Value {
+    pub(crate) fn song_json(id: i64, title: &str) -> serde_json::Value {
         serde_json::json!({
             "id": id,
             "title": title,
@@ -1888,7 +1888,7 @@ mod tests {
         })
     }
 
-    fn tone_json(id: i64, song_id: i64, title: &str) -> serde_json::Value {
+    pub(crate) fn tone_json(id: i64, song_id: i64, title: &str) -> serde_json::Value {
         serde_json::json!({
             "id": id,
             "song_id": song_id,
@@ -1924,14 +1924,17 @@ mod tests {
         })
     }
 
-    struct StubServer {
-        base: String,
+    /// A TonePush that answers each request in turn from a script, and
+    /// keeps what it was sent: mocked responses, for tests anywhere in the
+    /// crate.
+    pub(crate) struct StubServer {
+        pub(crate) base: String,
         requests: Arc<Mutex<Vec<Vec<u8>>>>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl StubServer {
-        fn start(responses: Vec<(u16, serde_json::Value)>) -> Self {
+        pub(crate) fn start(responses: Vec<(u16, serde_json::Value)>) -> Self {
             Self::start_raw(
                 responses
                     .into_iter()
@@ -1971,7 +1974,7 @@ mod tests {
             }
         }
 
-        fn finish(mut self) -> Vec<Vec<u8>> {
+        pub(crate) fn finish(mut self) -> Vec<Vec<u8>> {
             self.thread.take().unwrap().join().unwrap();
             Arc::try_unwrap(self.requests)
                 .unwrap()

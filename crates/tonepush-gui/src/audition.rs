@@ -125,6 +125,8 @@ pub(crate) enum Arrows {
     Tones,
     /// TonePush's tones, as the Cloud draws them.
     Cloud,
+    /// Your tones on TonePush, as Mine draws them.
+    Mine,
     /// The library's setlists: their keys rename and delete one; the
     /// arrows still step through the pedal's presets.
     Setlists,
@@ -796,6 +798,14 @@ impl App {
                 self.space_on_cloud(ctx);
             }
         }
+        let mine = self.hearing.arrows == Arrows::Mine
+            && self.lib_showing == LibraryView::Cloud
+            && self.pane.cloud_scope == crate::library_pane::CloudScope::Mine
+            && !self.library_folded(tier)
+            && self.sending.is_none();
+        if mine {
+            self.mine_keys(ctx);
+        }
         let tones = self.hearing.arrows == Arrows::Tones
             && self.lib_showing == LibraryView::Tones
             && !self.library_folded(tier)
@@ -818,6 +828,7 @@ impl App {
             || self.confirm_push.is_some()
             || self.confirm_delete.is_some()
             || self.confirm_setlist_delete.is_some()
+            || self.publish_ask.is_some()
             || self.name_clash.is_some()
             || self.put_question.is_some()
     }
@@ -1021,7 +1032,12 @@ impl App {
                         .show(ui)
                         .on_hover_text("Write the preset back exactly as it was, changes and all")
                         .clicked();
-                    if !small && matches!(self.hearing.arrows, Arrows::Tones | Arrows::Cloud) {
+                    if !small
+                        && matches!(
+                            self.hearing.arrows,
+                            Arrows::Tones | Arrows::Cloud | Arrows::Mine
+                        )
+                    {
                         ui.spacing_mut().item_spacing.x = 5.0;
                         theme::label(
                             ui,

@@ -844,6 +844,76 @@ pub fn override_with(old: &str, hash: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What this library published to TonePush for one tone: the Tone and Song
+/// TonePush gave it, so a later version goes to the same Tone under the same
+/// Song instead of starting a new Song each time.
+///
+/// Kept apart from the index, by the tone's stable identity (its series), so
+/// a tone deleted from the library is still known to be on TonePush.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Published {
+    /// The Tone on TonePush: the stable one its versions belong to.
+    pub tone_id: i64,
+    /// The Song it belongs to.
+    pub song_id: i64,
+    /// The library revision last published, by hash.
+    #[serde(default)]
+    pub hash: String,
+    /// What the tone was called when it was published.
+    #[serde(default)]
+    pub name: String,
+    /// When it was published from here.
+    #[serde(default)]
+    pub at: String,
+}
+
+fn published_path() -> Option<PathBuf> {
+    dir().map(|dir| dir.join("published.json"))
+}
+
+/// Every tone this library published, by series.
+pub fn published() -> BTreeMap<String, Published> {
+    published_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Remember what TonePush answered for a tone published from here.
+pub fn record_published(series: &str, record: Published) -> Result<(), String> {
+    let path = published_path().ok_or("no library to save into")?;
+    let mut all = published();
+    all.insert(series.to_owned(), record);
+    let json = serde_json::to_vec_pretty(&all).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create the library: {e}"))?;
+    }
+    atomic_write(&path, json).map_err(|e| format!("could not save what was published: {e}"))
+}
+
+/// Forget a tone's record: TonePush no longer has it.
+pub fn forget_published(series: &str) -> Result<(), String> {
+    let Some(path) = published_path() else {
+        return Ok(());
+    };
+    let mut all = published();
+    if all.remove(series).is_none() {
+        return Ok(());
+    }
+    let json = serde_json::to_vec_pretty(&all).map_err(|e| e.to_string())?;
+    atomic_write(&path, json).map_err(|e| format!("could not save what was published: {e}"))
+}
+
+/// The stable identity of the tone a revision belongs to.
+pub fn series_of(hash: &str) -> Option<String> {
+    read_index()
+        .series
+        .into_iter()
+        .find(|(_, series)| series.versions.iter().any(|version| version == hash))
+        .map(|(id, _)| id)
+}
+
 /// Save one tone's metadata, leaving the rest of the index untouched.
 pub fn save_meta(hash: &str, meta: &Meta) -> Result<Meta, String> {
     let mut index = index_for_update()?;

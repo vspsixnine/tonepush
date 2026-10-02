@@ -8,6 +8,7 @@
 use egui::Pos2;
 
 use crate::audition::Arrows;
+use crate::cloud;
 use crate::devices::{self, Marker, Refusal, Verdict};
 use crate::library;
 use crate::theme::{self, Icon, Tier};
@@ -24,6 +25,8 @@ pub(crate) enum MenuFor {
     Setlist(usize),
     /// One slot of a setlist.
     SetlistSlot { setlist: usize, slot: usize },
+    /// One of your tones on TonePush, by its id there.
+    Mine(i64),
 }
 
 /// What a menu asked for, carried out once it has closed.
@@ -53,6 +56,12 @@ enum Act {
     SlotSend(usize, usize),
     SlotElsewhere(usize, usize),
     SlotShow(usize, usize),
+    MinePlay(i64),
+    MinePut(i64),
+    MineShow(i64),
+    MineRename(i64),
+    PublishHash(String),
+    MakeCurrent(String, u32),
 }
 
 fn menu_id() -> egui::Id {
@@ -111,6 +120,7 @@ impl App {
                 MenuFor::SetlistSlot { setlist, slot } => {
                     self.setlist_slot_menu(ui, *setlist, *slot)
                 }
+                MenuFor::Mine(tone_id) => self.mine_menu(ui, *tone_id),
             };
         });
         if shown.is_none() {
@@ -524,6 +534,222 @@ impl App {
         act
     }
 
+    /// The menu of one of your tones on TonePush. Today renaming it and
+    /// making another version current publish its file again.
+    fn mine_menu(&self, ui: &mut egui::Ui, tone_id: i64) -> Option<Act> {
+        let row = self.mine_row(tone_id)?;
+        let mut act = None;
+        let aside = match row.versions() {
+            Some((current, _)) => format!("yours · v{current}"),
+            None => "yours".to_owned(),
+        };
+        theme::menu_header(ui, &row.name(), Some(&aside));
+        let discovered = row.discovered();
+        let refused = match &discovered {
+            Some(tone) => self.cloud_menu_refusal(tone),
+            None => Some((
+                "asking TonePush".to_owned(),
+                "TonePush has not answered for it yet".to_owned(),
+            )),
+        };
+        if keyed(
+            ui,
+            Icon::Volume,
+            &format!("Play on {}", self.device_words()),
+            &["Space"],
+            refused.as_ref(),
+        ) {
+            act = Some(Act::MinePlay(tone_id));
+        }
+        let put_refused = refused.clone().or_else(|| self.put_menu_refusal());
+        if keyed(
+            ui,
+            Icon::ArrowDownToLine,
+            "Put in a slot…",
+            &["Ctrl", "Enter"],
+            put_refused.as_ref(),
+        ) {
+            act = Some(Act::MinePut(tone_id));
+        }
+        if row.local.is_some() {
+            if theme::menu_item(ui, Some(Icon::Computer), "Show in your tones", None).clicked() {
+                act = Some(Act::MineShow(tone_id));
+            }
+        } else if keyed(
+            ui,
+            Icon::CloudDownload,
+            "Keep in your library",
+            &["Ctrl", "D"],
+            discovered
+                .is_none()
+                .then(|| {
+                    (
+                        "asking TonePush".to_owned(),
+                        "TonePush has not answered for it yet".to_owned(),
+                    )
+                })
+                .as_ref(),
+        ) {
+            act = Some(Act::MineShow(tone_id));
+        }
+        theme::menu_separator(ui);
+        match self.mine_ahead(&row) {
+            Some(ahead) => {
+                if theme::menu_item(
+                    ui,
+                    Some(Icon::CloudUpload),
+                    &format!("Publish v{} from your library…", ahead.version),
+                    None,
+                )
+                .clicked()
+                {
+                    act = Some(Act::PublishHash(ahead.hash));
+                }
+            }
+            None => {
+                theme::menu_disabled(
+                    ui,
+                    Some(Icon::CloudUpload),
+                    "Publish from your library…",
+                    Some(if row.local.is_some() {
+                        "the same"
+                    } else {
+                        "not in this library"
+                    }),
+                );
+            }
+        }
+        let renamable = self.mine_rename_refusal(&row);
+        if keyed(
+            ui,
+            Icon::TextCursorInput,
+            "Rename on TonePush…",
+            &["F2"],
+            renamable.as_ref(),
+        ) {
+            act = Some(Act::MineRename(tone_id));
+        }
+        let others: Vec<cloud::ToneVersion> = discovered
+            .as_ref()
+            .map(|tone| {
+                tone.tone
+                    .versions
+                    .iter()
+                    .filter(|version| !version.current)
+                    .rev()
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if others.is_empty() {
+            theme::menu_disabled(
+                ui,
+                Some(Icon::History),
+                "Make another version current",
+                Some("only this one"),
+            );
+        } else {
+            theme::menu_submenu(ui, Icon::History, "Make another version current", |ui| {
+                theme::menu_width(ui, 240.0);
+                for version in &others {
+                    let words = format!(
+                        "v{}  ·  {}",
+                        version.number,
+                        crate::day_month(&version.created_at)
+                    );
+                    match self.mine_local_version(&row, &version.file_sha256) {
+                        Some(hash) => {
+                            if theme::menu_item(ui, Some(Icon::History), &words, None).clicked() {
+                                act = Some(Act::MakeCurrent(hash, version.number));
+                            }
+                        }
+                        None => {
+                            theme::menu_disabled(
+                                ui,
+                                Some(Icon::History),
+                                &words,
+                                Some("not in this library"),
+                            );
+                        }
+                    }
+                }
+            });
+        }
+        theme::menu_separator(ui);
+        if let Some(url) = self.mine_url(&row) {
+            if theme::menu_item(ui, Some(Icon::ExternalLink), "Open on tonepush.rocks", None)
+                .clicked()
+            {
+                act = Some(Act::Open(url.clone()));
+            }
+            if theme::menu_item(ui, Some(Icon::Link), "Copy link", None).clicked() {
+                act = Some(Act::CopyLink(url));
+            }
+        }
+        act
+    }
+
+    /// Why one of your tones cannot be renamed on TonePush now. Today a
+    /// rename publishes its file again, so the library must hold that file.
+    pub(crate) fn mine_rename_refusal(
+        &self,
+        row: &crate::mine::MineRow,
+    ) -> Option<(String, String)> {
+        let file = row
+            .details
+            .as_ref()
+            .and_then(|tone| tone.file_sha256.clone());
+        match file {
+            None => Some((
+                "asking TonePush".to_owned(),
+                "TonePush has not answered for it yet".to_owned(),
+            )),
+            Some(file) if self.mine_local_version(row, &file).is_none() => Some((
+                "not in this library".to_owned(),
+                "Renaming publishes its file again, and this library does not hold it".to_owned(),
+            )),
+            Some(_) => None,
+        }
+    }
+
+    /// Rename one of your tones on TonePush: the sheet asks for the name.
+    pub(crate) fn rename_on_tonepush(&mut self, tone_id: i64) {
+        let Some(row) = self.mine_row(tone_id) else {
+            return;
+        };
+        if let Some((_, why)) = self.mine_rename_refusal(&row) {
+            return self.note(why);
+        }
+        let file = row
+            .details
+            .as_ref()
+            .and_then(|tone| tone.file_sha256.clone())
+            .unwrap_or_default();
+        if let Some(hash) = self.mine_local_version(&row, &file) {
+            self.ask_to_rename_on_tonepush(hash, row.name());
+        }
+    }
+
+    /// Put one of your tones in a slot: from the library when it holds the
+    /// file TonePush gives, else kept from TonePush first.
+    pub(crate) fn mine_put(&mut self, tone_id: i64, ctx: &egui::Context) {
+        let Some(row) = self.mine_row(tone_id) else {
+            return;
+        };
+        let file = row
+            .details
+            .as_ref()
+            .and_then(|tone| tone.file_sha256.clone());
+        let local = file
+            .and_then(|file| self.mine_local_version(&row, &file))
+            .and_then(|hash| self.lib_entries.iter().position(|entry| entry.hash == hash));
+        match (local, row.discovered()) {
+            (Some(index), _) => self.start_putting(&[index]),
+            (None, Some(tone)) => self.start_cloud_entry_action(tone, CloudAction::Put, ctx),
+            (None, None) => {}
+        }
+    }
+
     /// "the HX Stomp": the pedal connected, for "Play on the HX Stomp".
     pub(crate) fn device_words(&self) -> String {
         match self.device.trim() {
@@ -579,7 +805,7 @@ impl App {
             Act::PlayVersion(row, hash, number) => self.audition_version(row, hash, number),
             Act::Put(rows) => self.start_putting(&rows),
             Act::Rename(row) => self.rename_tone(row, tier),
-            Act::Publish(rows) => self.publish_rows(&rows, ctx),
+            Act::Publish(rows) => self.publish_rows(&rows),
             Act::Open(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             Act::Export(rows) => self.export_rows(&rows),
             Act::ShowInFolder(row) => self.show_tone_in_folder(row),
@@ -661,6 +887,16 @@ impl App {
                     }
                 }
             }
+            Act::MinePlay(tone_id) => {
+                self.mine.selected = Some(tone_id);
+                self.hearing.arrows = Arrows::Mine;
+                self.mine_play(tone_id, ctx);
+            }
+            Act::MinePut(tone_id) => self.mine_put(tone_id, ctx),
+            Act::MineShow(tone_id) => self.mine_show_or_keep(tone_id, ctx),
+            Act::MineRename(tone_id) => self.rename_on_tonepush(tone_id),
+            Act::PublishHash(hash) => self.ask_to_publish(vec![hash]),
+            Act::MakeCurrent(hash, version) => self.ask_to_make_current(hash, version),
             Act::SlotShow(setlist, slot) => {
                 let row = self
                     .setlist_slot(setlist, slot)
@@ -677,7 +913,7 @@ impl App {
 
     /// The library's row for a tone: the tone itself, or the tone an older
     /// version belongs to, whose details list that version.
-    fn library_row_of(&self, hash: &str) -> Option<usize> {
+    pub(crate) fn library_row_of(&self, hash: &str) -> Option<usize> {
         if let Some(row) = self.lib_entries.iter().position(|entry| entry.hash == hash) {
             return Some(row);
         }
@@ -729,30 +965,15 @@ impl App {
         }
     }
 
-    /// Publish tones one after another: the first now, each of the rest as
-    /// the one before it is answered.
-    pub(crate) fn publish_rows(&mut self, rows: &[usize], ctx: &egui::Context) {
-        self.publish_queue = rows
+    /// Publish tones, after the sheet asks: one after another, each as the
+    /// one before it is answered.
+    pub(crate) fn publish_rows(&mut self, rows: &[usize]) {
+        let hashes = rows
             .iter()
             .filter_map(|&row| self.lib_entries.get(row))
             .map(|entry| entry.hash.clone())
             .collect();
-        if self.publishing.is_none() {
-            if let Some(first) = self.publish_queue.pop_front() {
-                self.publish_hash(&first, ctx);
-                if self.publishing.is_none() {
-                    self.publish_queue.clear();
-                }
-            }
-        }
-    }
-
-    /// Publish one library tone, by its hash.
-    pub(crate) fn publish_hash(&mut self, hash: &str, ctx: &egui::Context) {
-        match self.lib_entries.iter().position(|entry| entry.hash == hash) {
-            Some(row) => self.start_publishing(row, ctx),
-            None => self.note("that tone is no longer in the library".to_owned()),
-        }
+        self.ask_to_publish(hashes);
     }
 
     /// Export tones for the web: one asks where, several go into one folder
@@ -968,6 +1189,30 @@ impl App {
                 } else if consume(Modifiers::SHIFT, Key::F10) {
                     let at = self.keyboard_menu_at(ctx);
                     self.open_row_menu(ctx, MenuFor::Setlist(index), at);
+                }
+            }
+            Arrows::Mine
+                if self.lib_showing == LibraryView::Cloud
+                    && self.pane.cloud_scope == crate::library_pane::CloudScope::Mine
+                    && !folded =>
+            {
+                let Some(tone_id) = self.mine.selected else {
+                    return;
+                };
+                if consume(Modifiers::COMMAND, Key::Enter) {
+                    self.mine_put(tone_id, ctx);
+                } else if consume(Modifiers::NONE, Key::F2) {
+                    self.rename_on_tonepush(tone_id);
+                } else if consume(Modifiers::COMMAND, Key::D) {
+                    if self
+                        .mine_row(tone_id)
+                        .is_some_and(|row| row.local.is_none())
+                    {
+                        self.mine_show_or_keep(tone_id, ctx);
+                    }
+                } else if consume(Modifiers::SHIFT, Key::F10) {
+                    let at = self.keyboard_menu_at(ctx);
+                    self.open_row_menu(ctx, MenuFor::Mine(tone_id), at);
                 }
             }
             Arrows::Presets => self.preset_keys(ctx),
