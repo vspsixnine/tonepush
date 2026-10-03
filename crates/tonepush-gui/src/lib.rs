@@ -299,6 +299,8 @@ enum Clash {
 }
 
 pub struct App {
+    /// Wheel step and Linux touchpad glide, applied before anything scrolls.
+    scrolling: fastframe_scroll::Scrolling,
     to_device: Sender<Cmd>,
     from_device: Receiver<Evt>,
     pro: pro::Panel,
@@ -1368,6 +1370,7 @@ impl App {
         let config = config::Config::load();
         theme::install(ctx, config.appearance);
         let mut app = App {
+            scrolling: fastframe_scroll::Scrolling::default(),
             to_device,
             from_device,
             pro: pro::Panel::new(ctx.clone()),
@@ -2062,6 +2065,8 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // First, so every scroll area this frame reads the scaled input.
+        self.scrolling.apply(ui.ctx());
         self.draw(ui);
     }
 
@@ -6258,9 +6263,19 @@ impl App {
                 writes.push((gain_id, gain));
             }
             // Scrolling over a band is how every EQ sets Q, and it saves the
-            // panel a third handle per band.
+            // panel a third handle per band. It reads the raw wheel input, one
+            // step per notch or touchpad event, not the smoothed delta, which
+            // spreads a notch (and a touchpad's glide) over many frames.
             if response.hovered() {
-                let scroll = ui.input(|i| i.smooth_scroll_delta().y);
+                let scroll = ui.input(|i| {
+                    i.events
+                        .iter()
+                        .map(|event| match event {
+                            egui::Event::MouseWheel { delta, .. } => delta.y,
+                            _ => 0.0,
+                        })
+                        .sum::<f32>()
+                });
                 if scroll != 0.0 {
                     let q = (band.q * (1.0 + scroll.signum() * 0.12)).clamp(0.1, 10.0);
                     writes.push((q_id, q));
