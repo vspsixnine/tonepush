@@ -125,6 +125,9 @@ impl<L: Link> Device<L> {
             license: read_string(&mut session, "root\\sys\\_license")?,
         };
         let write_safety = assess_identity(&identity);
+        if needs_pacing(&identity.version) {
+            session.pace(PACE_GAP);
+        }
         Ok(Self {
             session,
             identity,
@@ -283,7 +286,7 @@ impl<L: Link> Device<L> {
         let chunks = list.chunks_per_slot();
         let mut blob = Vec::with_capacity(list.size);
         progress(0, chunks);
-        let batch = read_batch_chunks(list.chunk_size);
+        let batch = self.batch_chunks(list.chunk_size);
         for first in (1..=chunks).step_by(batch) {
             let last = (first + batch - 1).min(chunks);
             let requested = (first..=last).collect::<Vec<_>>();
@@ -836,6 +839,33 @@ pub(crate) fn read_batch_chunks(chunk_size: usize) -> usize {
     (READ_BATCH_BYTES / chunk_size.max(1)).clamp(1, READ_BATCH_CHUNKS)
 }
 
+/// Quiet kept after each reply on firmware that needs pacing.
+const PACE_GAP: Duration = Duration::from_millis(50);
+/// Chunk data asked for in one paced request.
+const PACED_BATCH_BYTES: usize = 8 * 1024;
+
+/// Firmware 1.x and 2.0 answer back-to-back requests at full speed. 2.2
+/// stalls once the computer has used the pedal's USB audio unless requests
+/// stay small and the link goes quiet between replies: on a pedal at 2.2.6,
+/// 8 KiB requests with 50 ms after each reply read 400 batches without a
+/// stall, where 16 KiB back to back stalled on 14 of 40. Anything newer than
+/// 2.0 is paced until shown otherwise.
+fn needs_pacing(version: &str) -> bool {
+    !matches!(release_line(version), Some(line) if line.starts_with("1.") || line == "2.0")
+        && version != voidx_proto::update::UPDATE_MODE_VERSION
+}
+
+impl<L: Link> Device<L> {
+    /// Chunks per read request for a list with `chunk_size`-byte chunks.
+    pub(crate) fn batch_chunks(&self, chunk_size: usize) -> usize {
+        if self.session.paced() {
+            (PACED_BATCH_BYTES / chunk_size.max(1)).clamp(1, READ_BATCH_CHUNKS)
+        } else {
+            read_batch_chunks(chunk_size)
+        }
+    }
+}
+
 fn assess_identity(identity: &Identity) -> WriteSafety {
     let expected = format!(
         "StompStation PRO / firmware {}.x / CM4 / sspro",
@@ -1187,6 +1217,15 @@ mod tests {
                 "{version}"
             );
         }
+    }
+
+    #[test]
+    fn firmware_from_2_2_is_paced() {
+        assert!(!needs_pacing("1.5.12"));
+        assert!(!needs_pacing("2.0.10"));
+        assert!(needs_pacing("2.2.6"));
+        assert!(needs_pacing("3.0.0"));
+        assert!(!needs_pacing("Update Mode"));
     }
 
     #[test]

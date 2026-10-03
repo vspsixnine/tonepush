@@ -941,7 +941,7 @@ fn stored_content_matches<L: Link>(
         None
     }
     .unwrap_or_else(|| (1..=chunks).collect());
-    for batch in wanted.chunks(crate::device::read_batch_chunks(list.chunk_size)) {
+    for batch in wanted.chunks(device.batch_chunks(list.chunk_size)) {
         for (&chunk, bytes) in batch
             .iter()
             .zip(device.read_blob_chunks(&list.path, index, batch)?)

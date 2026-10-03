@@ -18,6 +18,10 @@ pub(crate) struct Session<L> {
     notifications: VecDeque<Notification>,
     timeout: Duration,
     lost: bool,
+    /// The quiet time kept after each reply before the next request, when
+    /// the firmware needs it; see [`Session::pace`].
+    pace: Option<Duration>,
+    replied_at: Option<Instant>,
 }
 
 const MAX_NOTIFICATIONS: usize = 1024;
@@ -31,6 +35,29 @@ impl<L: Link> Session<L> {
             notifications: VecDeque::new(),
             timeout,
             lost: false,
+            pace: None,
+            replied_at: None,
+        }
+    }
+
+    /// Keep `gap` of quiet after every reply. Firmware 2.2 stops sending
+    /// over USB serial once the computer has used its USB audio, unless the
+    /// link goes quiet between replies so it can mask the controller's
+    /// interrupts again; VoidX Control paces its requests the same way.
+    pub(crate) fn pace(&mut self, gap: Duration) {
+        self.pace = Some(gap);
+    }
+
+    pub(crate) fn paced(&self) -> bool {
+        self.pace.is_some()
+    }
+
+    fn wait_for_quiet(&self) {
+        if let (Some(gap), Some(at)) = (self.pace, self.replied_at) {
+            let since = at.elapsed();
+            if since < gap {
+                std::thread::sleep(gap - since);
+            }
         }
     }
 
@@ -41,6 +68,7 @@ impl<L: Link> Session<L> {
         let expected = command.response_subject();
         let browse = matches!(command, Command::Browse(_));
         let encoded = command.encode()?;
+        self.wait_for_quiet();
         if let Err(source) = self.link.write_all(&encoded) {
             self.lost = true;
             return Err(Error::Io {
@@ -94,6 +122,7 @@ impl<L: Link> Session<L> {
                     });
                 }
                 if !matching.is_empty() {
+                    self.replied_at = Some(Instant::now());
                     return Ok(Frame::new(matching));
                 }
             }
@@ -149,6 +178,7 @@ impl<L: Link> Session<L> {
         }
         let expected_total = commands.len();
         let encoded = Command::encode_batch(commands)?;
+        self.wait_for_quiet();
         if let Err(source) = self.link.write_all(&encoded) {
             self.lost = true;
             return Err(Error::Io {
@@ -185,6 +215,7 @@ impl<L: Link> Session<L> {
                     }
                 }
                 if matching.len() == expected_total {
+                    self.replied_at = Some(Instant::now());
                     return Ok(Frame::new(matching));
                 }
             }
