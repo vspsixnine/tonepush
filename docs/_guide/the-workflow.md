@@ -39,7 +39,7 @@ A click on a tone in your library plays it on the pedal, in the place of the pre
 
 Turn its knobs while it plays and the changes stay with it, and the bar counts them: Keep keeps them, Put back drops them and restores the preset exactly as it was set aside, and stepping to another tone leaves them behind. Undo and redo work on those changes alone while it plays.
 
-While a tone plays, Save is off and Ctrl S points at the bar instead; the deck, the chain and the preset's row in the sidebar say what is auditioned. Switching between the library's tabs leaves it playing. Clicking another preset puts it back first, then asks about its changes as any switch does, and clicking the loaded preset's own row puts it back. A tone the pedal cannot play says why where the bar would be, and offers to show only what the pedal plays. A StompStation PRO auditions the same way, and so does a tone from TonePush.
+While a tone plays, Save is off and Ctrl S points at the bar instead; the deck, the chain and the preset's row in the sidebar say what is auditioned. Switching between the library's tabs leaves it playing. Clicking another preset puts it back first, then asks about its changes as any switch does, and clicking the loaded preset's own row puts it back. A tone the pedal cannot play says why where the bar would be, and offers to show only what the pedal plays. A StompStation PRO auditions the same way, and so does a tone from TonePush. A click while the pedal is busy, such as a StompStation PRO backing up, waits its turn and plays once the pedal is free; delete that tone first, or let the pedal go, and it is not played. A tone the pedal could not play says why, and the preset set aside is back.
 
 ### Put tones in the pedal's slots
 

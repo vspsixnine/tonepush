@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use egui::RichText;
@@ -227,8 +229,12 @@ enum Evt {
     ForgetPresetHashes,
     SetlistRead(Vec<(String, Option<Vec<u8>>)>),
     Auditioning(Option<i64>),
-    /// The tone asked to play under this key could not be played.
-    AuditionFailed(i64),
+    /// The tone asked to play under this key could not be played, and why.
+    /// What was set aside plays again.
+    AuditionFailed {
+        key: i64,
+        why: String,
+    },
     Guarded {
         path: PathBuf,
         preset_hashes: BTreeMap<usize, String>,
@@ -322,7 +328,12 @@ pub(crate) struct Panel {
     /// The sidebar asked to keep the whole pedal as a setlist.
     capture_asked: bool,
     audition_events: Vec<Option<i64>>,
-    audition_failures: Vec<i64>,
+    audition_failures: Vec<(i64, String)>,
+    /// The key of the audition the editor still wants played, or 0. Shared
+    /// with the worker, which reads it as it comes to each audition: one
+    /// asked for behind a backup and withdrawn, or overtaken by a newer one,
+    /// is passed over rather than played minutes later.
+    wanted: Arc<AtomicI64>,
     /// What the editor auditions in the loaded preset's place, for the
     /// deck, the board and the sidebar to say; set by the app each frame.
     pub(crate) hearing: Option<crate::audition::Shown>,
@@ -374,6 +385,7 @@ impl Panel {
     pub(crate) fn new(ctx: egui::Context) -> Self {
         let (tx, commands) = mpsc::channel();
         let (events, rx) = mpsc::channel();
+        let wanted = Arc::new(AtomicI64::new(0));
         if cfg!(test) {
             // A test builds an App, and an App builds this panel: nothing a
             // test asks of it may reach a StompStation PRO that happens to
@@ -386,7 +398,12 @@ impl Panel {
                 for _ in commands {}
             });
         } else {
-            std::thread::spawn(move || Worker::new(commands, events, ctx).run());
+            let wanted = wanted.clone();
+            std::thread::spawn(move || {
+                let mut worker = Worker::new(commands, events, ctx);
+                worker.wanted = wanted;
+                worker.run();
+            });
         }
         let mut panel = Self {
             tx,
@@ -428,6 +445,7 @@ impl Panel {
             capture_asked: false,
             audition_events: Vec::new(),
             audition_failures: Vec::new(),
+            wanted,
             hearing: None,
             put_targets: Vec::new(),
             dropping: false,
@@ -575,7 +593,7 @@ impl Panel {
                     self.captured_setlists.push(slots);
                 }
                 Ok(Evt::Auditioning(key)) => self.audition_events.push(key),
-                Ok(Evt::AuditionFailed(key)) => self.audition_failures.push(key),
+                Ok(Evt::AuditionFailed { key, why }) => self.audition_failures.push((key, why)),
                 Ok(Evt::Guarded {
                     path,
                     preset_hashes,
@@ -880,11 +898,30 @@ impl Panel {
     }
 
     pub(crate) fn audition(&self, key: i64, name: String, bytes: Vec<u8>) {
+        self.wanted.store(key, Ordering::SeqCst);
         let _ = self.tx.send(Cmd::Audition { key, name, bytes });
     }
 
+    /// Put back what an audition set aside. One still on its way is not
+    /// played first.
     pub(crate) fn end_audition(&self) {
+        self.wanted.store(0, Ordering::SeqCst);
         let _ = self.tx.send(Cmd::EndAudition);
+    }
+
+    /// No longer play the audition asked for under this key, if the worker
+    /// has not come to it yet. Nothing is sent: the worker passes it over
+    /// when it does.
+    pub(crate) fn withdraw_audition(&self, key: i64) {
+        let _ = self
+            .wanted
+            .compare_exchange(key, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    /// Say something in the deck's status line, as a problem or a note.
+    pub(crate) fn report(&mut self, line: String, problem: bool) {
+        self.failed = problem;
+        self.status = line;
     }
 
     pub(crate) fn keep_audition(&self) {
@@ -895,7 +932,7 @@ impl Panel {
         std::mem::take(&mut self.audition_events)
     }
 
-    pub(crate) fn take_audition_failures(&mut self) -> Vec<i64> {
+    pub(crate) fn take_audition_failures(&mut self) -> Vec<(i64, String)> {
         std::mem::take(&mut self.audition_failures)
     }
 
@@ -1908,6 +1945,8 @@ struct Worker {
     /// The undo history set aside while a tone is auditioned, with the
     /// audition's own key; the audition keeps a history of its own.
     audition: Option<SetAside>,
+    /// The audition the editor still wants, shared with the panel.
+    wanted: Arc<AtomicI64>,
     history: Vec<Vec<NodeEdit>>,
     future: Vec<Vec<NodeEdit>>,
     last_edit_at: Option<Instant>,
@@ -1950,6 +1989,7 @@ impl Worker {
             rollback_path: None,
             audition_original: Vec::new(),
             audition: None,
+            wanted: Arc::new(AtomicI64::new(0)),
             history: Vec::new(),
             future: Vec::new(),
             last_edit_at: None,
@@ -2393,15 +2433,22 @@ impl Worker {
                 self.send(Evt::Success("Setlist written to the pedal".into()));
                 Ok(())
             }
+            // Overtaken by a newer one, or withdrawn while it waited behind
+            // something long: the editor has moved on, so the pedal is left
+            // as it is.
+            Cmd::Audition { key, .. } if self.wanted.load(Ordering::SeqCst) != key => Ok(()),
             Cmd::Audition { key, name, bytes } => {
                 let played = self.audition(key, &name, &bytes);
-                if played.is_err() {
-                    self.send(Evt::AuditionFailed(key));
-                    // What played before was put back on the way.
-                    if self.audition_original.is_empty() {
-                        self.take_back_history();
-                        self.send(Evt::Auditioning(None));
-                    }
+                if let Err(error) = &played {
+                    // Whatever of it was written goes back, so what was set
+                    // aside plays again, whichever step failed.
+                    let _ = self.restore_audition();
+                    self.take_back_history();
+                    self.send(Evt::AuditionFailed {
+                        key,
+                        why: error.to_string(),
+                    });
+                    self.send(Evt::Auditioning(None));
                 }
                 played
             }
@@ -4425,6 +4472,17 @@ pub(crate) mod demo {
             }
         }
 
+        /// Stand in for the worker: what the panel sends comes out of the
+        /// receiver, and what is sent into the sender arrives as the
+        /// worker's events.
+        pub(super) fn stand_in(&mut self) -> (mpsc::Receiver<Cmd>, mpsc::Sender<Evt>) {
+            let (tx, commands) = mpsc::channel();
+            let (events, rx) = mpsc::channel();
+            self.tx = tx;
+            self.rx = rx;
+            (commands, events)
+        }
+
         /// A look that has been answered with nothing found.
         pub(crate) fn demo_looked(&mut self) {
             self.connecting = false;
@@ -5019,6 +5077,208 @@ root\\app\\ir\\on_off:{\"value\":\"OFF\"}\r\n";
         let (coalesced, pending) = worker.coalesce_live_edits(audition(1));
         assert!(matches!(coalesced, Cmd::Audition { key: 3, .. }));
         assert!(matches!(pending, Some(Cmd::EndAudition)));
+    }
+
+    /// An audition the editor has given up on, or that a newer one has
+    /// overtaken, is passed over when the worker comes to it; one it still
+    /// wants is played, and if that fails the worker says why and puts back
+    /// what was set aside.
+    #[test]
+    fn the_worker_plays_only_the_audition_still_wanted() {
+        let (_commands, receiver) = mpsc::channel();
+        let (events, said) = mpsc::channel();
+        let mut worker = Worker::new(receiver, events, egui::Context::default());
+        let audition = |key: i64| Cmd::Audition {
+            key,
+            name: format!("Tone {key}"),
+            bytes: preset(),
+        };
+
+        // Withdrawn: nothing is asked of the pedal (there is none here, so
+        // asking would fail) and nothing is said.
+        assert!(worker.handle(audition(5)).is_ok());
+        worker.wanted.store(6, Ordering::SeqCst);
+        assert!(worker.handle(audition(5)).is_ok(), "overtaken by 6");
+        assert!(said.try_recv().is_err());
+
+        // Still wanted: it is played, here unsuccessfully.
+        worker.history.push(Vec::new());
+        assert!(worker.handle(audition(6)).is_err());
+        let said: Vec<Evt> = said.try_iter().collect();
+        assert!(said.iter().any(|event| matches!(
+            event,
+            Evt::AuditionFailed { key: 6, why } if why.contains("not connected")
+        )));
+        assert!(matches!(said.last(), Some(Evt::Auditioning(None))));
+        assert_eq!(worker.history.len(), 1, "the preset's history is back");
+        assert!(worker.audition.is_none() && worker.audition_original.is_empty());
+    }
+
+    /// The editor and a stand-in for the PRO's worker: a StompStation PRO
+    /// with Clean loaded, and two of its tones in a scratch library.
+    fn editor() -> (
+        crate::library::tests::Scratch,
+        crate::App,
+        mpsc::Receiver<Cmd>,
+        mpsc::Sender<Evt>,
+    ) {
+        let scratch = crate::library::tests::Scratch::new("pro-audition");
+        crate::library::keep("'80 Lead - CR", "vxpreset", &preset()).unwrap();
+        crate::library::keep(
+            "Dream Pop",
+            "vxpreset",
+            b"root\\app\\amp\\gain:{\"value\":3}",
+        )
+        .unwrap();
+        let (to_device, _) = mpsc::channel();
+        let (_, from_device) = mpsc::channel();
+        let mut app = crate::App::new(&egui::Context::default(), to_device, from_device);
+        app.pro.show_demo();
+        let (commands, events) = app.pro.stand_in();
+        app.refresh_library();
+        (scratch, app, commands, events)
+    }
+
+    /// Click a tone in the library, and answer with the key the worker was
+    /// asked to play it under.
+    fn click(app: &mut crate::App, commands: &mpsc::Receiver<Cmd>, name: &str) -> i64 {
+        let row = app
+            .lib_entries
+            .iter()
+            .position(|entry| entry.name == name)
+            .expect("the tone is in the library");
+        app.audition_library(row);
+        match commands.try_recv() {
+            Ok(Cmd::Audition { key, .. }) => key,
+            _ => panic!("expected the worker to be asked to play {name}"),
+        }
+    }
+
+    /// What the worker said, as the editor takes it between frames.
+    fn hear(app: &mut crate::App, events: &mpsc::Sender<Evt>, said: Vec<Evt>) {
+        for event in said {
+            events.send(event).unwrap();
+        }
+        app.pro.drain();
+        app.settle_pro_auditions();
+    }
+
+    /// Clicked while the pedal backs up, an audition waits its turn and
+    /// plays once the backup is done.
+    #[test]
+    fn an_audition_asked_for_during_a_backup_plays_after_it() {
+        let (_scratch, mut app, commands, events) = editor();
+        hear(&mut app, &events, vec![Evt::Busy(true)]);
+        let key = click(&mut app, &commands, "'80 Lead - CR");
+        assert_eq!(app.pro.wanted.load(Ordering::SeqCst), key);
+
+        for _ in 0..3 {
+            hear(
+                &mut app,
+                &events,
+                vec![Evt::Working {
+                    what: "Presets slot 4".into(),
+                    progress: 0.3,
+                }],
+            );
+        }
+        assert!(app.heard_loading(), "still on its way behind the backup");
+
+        hear(
+            &mut app,
+            &events,
+            vec![Evt::Success("Backed up".into()), Evt::Busy(false)],
+        );
+        hear(&mut app, &events, vec![Evt::Auditioning(Some(key))]);
+        assert_eq!(
+            app.heard_playing().map(|heard| heard.name.as_str()),
+            Some("'80 Lead - CR")
+        );
+    }
+
+    /// Deleting the tone on its way to the pedal ends its audition there:
+    /// the worker passes it over, what was set aside stays, and the strip
+    /// and the status line say why. Should the pedal play it all the same,
+    /// it is put back.
+    #[test]
+    fn deleting_a_tone_on_its_way_ends_its_audition() {
+        let (_scratch, mut app, commands, events) = editor();
+        hear(&mut app, &events, vec![Evt::Busy(true)]);
+        let key = click(&mut app, &commands, "'80 Lead - CR");
+        let lead = app
+            .hearing
+            .heard
+            .as_ref()
+            .unwrap()
+            .source
+            .hash()
+            .unwrap()
+            .to_owned();
+
+        crate::library::forget_all(&[lead]).unwrap();
+        app.refresh_library();
+
+        assert!(!app.hearing(), "nothing is on its way any more");
+        assert!(!app.heard_loading());
+        assert_eq!(app.pro.wanted.load(Ordering::SeqCst), 0, "not played later");
+        let strip = app.hearing.strip.as_ref().expect("the strip says why");
+        assert!(strip.words[0].0.contains("left the library"));
+        assert!(app.pro.status.contains("'80 Lead - CR left the library"));
+        assert!(
+            commands.try_recv().is_err(),
+            "nothing played, nothing to put back"
+        );
+
+        // The worker had already begun it: it is put back once it plays.
+        hear(&mut app, &events, vec![Evt::Auditioning(Some(key))]);
+        assert!(matches!(commands.try_recv(), Ok(Cmd::EndAudition)));
+        hear(&mut app, &events, vec![Evt::Auditioning(None)]);
+        assert!(!app.hearing());
+    }
+
+    /// A tone the pedal could not play takes the Loading state with it:
+    /// what was set aside is back, and the status line says why.
+    #[test]
+    fn an_audition_that_fails_says_why_and_puts_back() {
+        let (_scratch, mut app, commands, events) = editor();
+        let key = click(&mut app, &commands, "'80 Lead - CR");
+        hear(
+            &mut app,
+            &events,
+            vec![
+                Evt::AuditionFailed {
+                    key,
+                    why: "the pedal did not answer".into(),
+                },
+                Evt::Auditioning(None),
+                Evt::Failed("the pedal did not answer".into()),
+            ],
+        );
+
+        assert!(!app.hearing());
+        assert!(app.hearing.set_aside.is_none());
+        assert!(app.pro.failed);
+        assert!(app
+            .pro
+            .status
+            .starts_with("'80 Lead - CR could not be played (the pedal did not answer)"));
+        assert!(app.bar_shown(), "the strip says it where the bar was");
+    }
+
+    /// A newer click overtakes one still on its way; and an audition on its
+    /// way when the pedal goes ends there.
+    #[test]
+    fn an_audition_on_its_way_gives_way_to_a_newer_one_or_a_lost_pedal() {
+        let (_scratch, mut app, commands, events) = editor();
+        hear(&mut app, &events, vec![Evt::Busy(true)]);
+        click(&mut app, &commands, "'80 Lead - CR");
+        let newer = click(&mut app, &commands, "Dream Pop");
+        assert_eq!(app.pro.wanted.load(Ordering::SeqCst), newer);
+        assert!(app.heard_loading());
+
+        hear(&mut app, &events, vec![Evt::Disconnected]);
+        assert!(!app.hearing());
+        assert!(app.pro.status.contains("Dream Pop was not played"));
     }
 
     #[test]

@@ -2053,12 +2053,7 @@ impl eframe::App for App {
         if self.pro.take_page_request() {
             self.go_to(shell::Page::Pedal);
         }
-        for key in self.pro.take_audition_events() {
-            self.audition_event(key);
-        }
-        for key in self.pro.take_audition_failures() {
-            self.audition_failed(key);
-        }
+        self.settle_pro_auditions();
         // Device events wake the UI directly. This slow fallback is for the
         // other background receivers (resource extraction and cloud work), so
         // an otherwise idle editor does not rebuild the whole immediate-mode
@@ -3497,6 +3492,8 @@ impl App {
         self.lib_selected =
             selected.and_then(|h| self.lib_entries.iter().position(|e| e.hash == h));
         self.write_portable_copies();
+        // A tone deleted while it was on its way to the pedal is not played.
+        self.settle_hearing();
     }
 
     /// Write the portable copy of every tone that has not got one.

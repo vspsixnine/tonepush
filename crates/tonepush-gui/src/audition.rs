@@ -198,6 +198,9 @@ pub(crate) struct Hearing {
     pub glimpse: Option<Glimpse>,
     /// The board and the face are drawing that tone this frame.
     pub glimpsing: bool,
+    /// An audition given up on while it was on its way: should the pedal
+    /// play it after all, it is put back at once.
+    withdrawn: Option<i64>,
     next: i64,
 }
 
@@ -305,7 +308,91 @@ impl App {
             self.hearing.set_aside = Some(self.loaded_preset());
         }
         self.hearing.strip = None;
+        self.hearing.withdrawn = None;
         self.hearing.heard = Some(Heard { key, source, name });
+    }
+
+    /// Give up on the tone on its way to the pedal, and say why: the pedal
+    /// is not asked to play it, what it set aside is what plays, and the
+    /// strip where the bar was and the status line both say so.
+    pub(crate) fn withdraw_heard(&mut self, why: &str) {
+        let Some(heard) = self.hearing.heard.clone() else {
+            return;
+        };
+        if self.pro_active() {
+            self.pro.withdraw_audition(heard.key);
+        }
+        self.hearing.withdrawn = Some(heard.key);
+        let back = self.give_up_hearing();
+        let line = format!("{} {why}{back}", heard.name);
+        self.hearing.strip = Some(Strip::plain(Icon::Info, line.clone()));
+        self.say(line, false);
+    }
+
+    /// End what is on its way and what plays: the pedal puts back what was
+    /// set aside if a tone had been played in its place. Answers how the
+    /// sentence saying so ends: ", and Clean is back."
+    fn give_up_hearing(&mut self) -> String {
+        let set_aside = self
+            .hearing
+            .set_aside
+            .as_ref()
+            .map(|set_aside| set_aside.name.clone())
+            .unwrap_or_default();
+        if self.auditioning.is_some() {
+            self.end_audition();
+        }
+        self.forget_heard();
+        if set_aside.is_empty() || !self.pedal_online() {
+            ".".to_owned()
+        } else {
+            format!(", and {set_aside} is back.")
+        }
+    }
+
+    /// Say something in the status line of the pedal connected.
+    fn say(&mut self, line: String, problem: bool) {
+        if self.pro_active() {
+            self.pro.report(line.clone(), problem);
+            self.note(line);
+        } else if problem {
+            self.problem(line);
+        } else {
+            self.note(line);
+        }
+    }
+
+    /// What the StompStation PRO's worker said of auditions since the last
+    /// frame, and an audition still on its way that can no longer arrive.
+    pub(crate) fn settle_pro_auditions(&mut self) {
+        for key in self.pro.take_audition_events() {
+            self.audition_event(key);
+        }
+        for (key, why) in self.pro.take_audition_failures() {
+            self.audition_failed_because(key, &why);
+        }
+        self.settle_hearing();
+    }
+
+    /// An audition still on its way when what it plays has gone from the
+    /// library, or the pedal it was going to has gone, ends there.
+    pub(crate) fn settle_hearing(&mut self) {
+        let Some(heard) = self.hearing.heard.clone() else {
+            return;
+        };
+        if !self.heard_loading() {
+            return;
+        }
+        let gone = match &heard.source {
+            Source::Library(hash) => !self.library_lookup.indexed.contains(hash),
+            Source::Setlist { hash, .. } => !library::holds(hash),
+            Source::TonePush(_) => false,
+        };
+        if gone {
+            self.withdraw_heard("left the library before it reached the pedal");
+        } else if self.pro_active() && !self.pro.is_online() {
+            self.withdraw_heard("was not played: the pedal is no longer connected");
+        }
     }
 
     /// Forget the tone asked to play and what it set aside.
@@ -722,6 +809,11 @@ impl App {
     pub(crate) fn audition_event(&mut self, key: Option<i64>) {
         let was = self.auditioning;
         self.auditioning = key;
+        if key.is_some() && key == self.hearing.withdrawn && self.hearing.heard.is_none() {
+            // Given up on, and played all the same: put it back.
+            self.hearing.withdrawn = None;
+            self.end_audition();
+        }
         if key.is_none() {
             self.put_aside_dirty = false;
             // The audition that played has ended: by Put back or Keep, or by
@@ -736,6 +828,30 @@ impl App {
                 self.forget_heard();
             }
         }
+    }
+
+    /// The tone asked to play under this key could not be played, for this
+    /// reason; the pedal plays what it set aside, and the strip and the
+    /// status line say so.
+    pub(crate) fn audition_failed_because(&mut self, key: i64, why: &str) {
+        let Some(heard) = self.hearing.heard.clone().filter(|heard| heard.key == key) else {
+            return;
+        };
+        let set_aside = self
+            .hearing
+            .set_aside
+            .as_ref()
+            .map(|set_aside| set_aside.name.clone())
+            .unwrap_or_default();
+        self.audition_failed(key);
+        let back = if set_aside.is_empty() {
+            ".".to_owned()
+        } else {
+            format!(", and {set_aside} is back.")
+        };
+        let line = format!("{} could not be played ({why}){back}", heard.name);
+        self.hearing.strip = Some(Strip::plain(Icon::Info, line.clone()));
+        self.say(line, true);
     }
 
     /// The tone asked to play under this key could not be played.
