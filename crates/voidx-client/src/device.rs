@@ -12,10 +12,10 @@ use crate::{values_equivalent, Error, Link, Notification, Result};
 /// Firmware release lines (major.minor) on which every persistent write
 /// TonePush makes was checked on a pedal, by reading each result back:
 /// saving, renaming, moving, clearing, preset, IR, stereo IR and NAM
-/// uploads, global settings and restore. Checked on 1.5.12 and 2.0.10; patch
-/// releases within a line are treated alike. 2.2 is left out because its USB
-/// serial stops answering during long reads.
-pub const VERIFIED_FIRMWARE: &[&str] = &["1.5", "2.0"];
+/// uploads, global settings and restore. Checked on 1.5.12, 2.0.10 and 2.2.6
+/// (paced, after the computer had used the pedal's USB audio); patch releases
+/// within a line are treated alike.
+pub const VERIFIED_FIRMWARE: &[&str] = &["1.5", "2.0", "2.2"];
 
 /// 2.0's NAM player caches models by slot and is not told when slots are
 /// swapped, so a preset can keep playing the model that used to be there
@@ -1055,7 +1055,7 @@ mod tests {
 
     #[test]
     fn unverified_firmware_can_change_only_the_live_preset() {
-        let mut frames = identity_frames("2.2.6");
+        let mut frames = identity_frames("2.3.0");
         frames.extend_from_slice(b"root\\app\\amp\\gain:{\"value\":5}\0");
         let link = Scripted {
             input: Cursor::new(frames),
@@ -1202,7 +1202,8 @@ mod tests {
             ("1.5.10", true),
             ("1.5.12", true),
             ("2.0.8", true),
-            ("2.2.6", false),
+            ("2.2.6", true),
+            ("2.3.0", false),
             ("1.4.2", false),
         ] {
             let identity = Identity {

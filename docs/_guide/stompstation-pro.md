@@ -13,14 +13,19 @@ A click on the pedal's card opens its own pages: its backups, NAM and IR
 libraries, settings and firmware.
 
 TonePush support is hardware-tested with a StompStation PRO running firmware
-1.5.12 and 2.0.10: every write it makes was read back on each. Patch
-releases are treated alike, so a pedal on 1.5.10 or 2.0.8 saves too. On other
-firmware, including 2.2.6, it opens the pedal read only: browsing, export,
-backups, picking presets and turning knobs work, and nothing is written to
-the pedal's memory. On 2.0.10, NAM models cannot be reordered, because that
-firmware keeps playing the old model after a move until it restarts. 2.2.6
-stops answering over USB during long reads, which makes complete backups
-unreliable, so saving waits for a firmware that fixes it. The protocol
+1.5.12, 2.0.10 and 2.2.6: every write it makes was read back on each. Patch
+releases are treated alike, so a pedal on 1.5.10 or 2.0.8 saves too. On
+firmware TonePush does not know yet, it opens the pedal read only: browsing,
+export, backups, picking presets and turning knobs work, and nothing is
+written to the pedal's memory. On 2.0.x, NAM models cannot be reordered,
+because that firmware keeps playing the old model after a move until it
+restarts.
+
+Firmware 2.2 stops answering over USB once the computer has used the pedal
+as a sound card (PipeWire and Windows do so on their own), unless requests
+stay small and the link goes quiet between replies. TonePush paces itself
+on 2.2 the way VoidX Control does, so a full backup takes about six minutes
+instead of two and a half. The protocol
 implementation is independent and based on the vendor's
 [public VoidX protocol documentation](https://www.voidxdevteam.com/voidx-control/voidx-protocol/)
 plus traffic captured from our own pedal.
