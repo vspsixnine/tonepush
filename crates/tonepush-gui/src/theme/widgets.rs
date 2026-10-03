@@ -19,6 +19,23 @@ fn centred_galley(ui: &Ui, galley: Arc<Galley>, left: f32, centre_y: f32) {
     ui.painter().galley(pos, galley, Color32::PLACEHOLDER);
 }
 
+/// The first line's baseline, from the galley's top.
+fn baseline(galley: &Galley) -> f32 {
+    galley
+        .rows
+        .first()
+        .and_then(|row| row.glyphs.first().map(|glyph| row.pos.y + glyph.pos.y))
+        .unwrap_or(galley.size().y)
+}
+
+/// A smaller hint after a label, on the label's baseline rather than centred
+/// on its own: "Save Ctrl+S" reads as one line of text.
+fn hint_on_baseline(ui: &Ui, hint: Arc<Galley>, left: f32, label: &Galley, centre_y: f32) {
+    let label_baseline = centre_y - label.size().y / 2.0 + baseline(label);
+    let pos = Pos2::new(left, label_baseline - baseline(&hint));
+    ui.painter().galley(pos, hint, Color32::PLACEHOLDER);
+}
+
 // ---------------------------------------------------------------------------
 // Buttons
 
@@ -311,6 +328,7 @@ impl<'a> Button<'a> {
             );
             x += icon_size + gap;
         }
+        let label = text_galley.clone();
         if let Some(galley) = text_galley {
             let width = galley.size().x;
             centred_galley(ui, galley, x, y);
@@ -318,7 +336,10 @@ impl<'a> Button<'a> {
         }
         if let Some(galley) = hint_galley {
             let width = galley.size().x;
-            centred_galley(ui, galley, x - gap + 4.0, y);
+            match &label {
+                Some(label) => hint_on_baseline(ui, galley, x - gap + 4.0, label, y),
+                None => centred_galley(ui, galley, x - gap + 4.0, y),
+            }
             x += width + gap;
         }
         if let Some(icon) = trailing {
@@ -437,9 +458,9 @@ pub fn split_button(
     let y = rect.center().y;
     let x = left.left() + size.padding();
     let width = text_galley.size().x;
-    centred_galley(ui, text_galley, x, y);
+    centred_galley(ui, text_galley.clone(), x, y);
     if let Some(galley) = hint_galley {
-        centred_galley(ui, galley, x + width + gap - 3.0, y);
+        hint_on_baseline(ui, galley, x + width + gap - 3.0, &text_galley, y);
     }
     paint_icon(ui, Icon::ChevronDown, right.center(), 14.0, ink);
     (action, menu)
