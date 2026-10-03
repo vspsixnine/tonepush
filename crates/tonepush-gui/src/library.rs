@@ -1019,25 +1019,40 @@ pub fn name_is_free(name: &str, except: &str) -> bool {
 /// store; if nothing plays it, [`collect_garbage`] moves it to the trash on the
 /// way out. Either way the library no longer claims it.
 pub fn forget(hash: &str) -> Result<(), String> {
+    forget_all(&[hash.to_owned()]).map(|_| ())
+}
+
+/// Take several tones out of the library at once, and answer with how many
+/// it held.
+///
+/// One pass, however many: the index is read and written once and the store
+/// swept once. Taking them one at a time rewrote the index and re-read every
+/// object in the store for each tone, on the thread that draws the window.
+pub fn forget_all(hashes: &[String]) -> Result<usize, String> {
     let mut index = index_for_update()?;
     index.version = VERSION;
-    let series_id = index
-        .series
-        .iter()
-        .find(|(_, series)| series.versions.iter().any(|version| version == hash))
-        .map(|(id, _)| id.clone());
-    if let Some(series_id) = series_id {
-        if let Some(series) = index.series.remove(&series_id) {
+    let mut gone = 0;
+    for hash in hashes {
+        let series_id = index
+            .series
+            .iter()
+            .find(|(_, series)| series.versions.iter().any(|version| version == hash))
+            .map(|(id, _)| id.clone());
+        let held = if let Some(series_id) = series_id {
+            let series = index.series.remove(&series_id).unwrap_or_default();
+            let mut held = false;
             for version in series.versions {
-                index.tones.remove(&version);
+                held |= index.tones.remove(&version).is_some();
             }
-        }
-    } else {
-        index.tones.remove(hash);
+            held
+        } else {
+            index.tones.remove(hash).is_some()
+        };
+        gone += usize::from(held);
     }
     write_index(&index)?;
     collect_garbage();
-    Ok(())
+    Ok(gone)
 }
 
 /// Every hash anything points at: the library's own tones, and every slot of
@@ -1952,6 +1967,35 @@ pub(crate) mod tests {
         assert_eq!(saved.added_at, first.added_at);
         assert!(!saved.modified_at.is_empty());
         assert_eq!(meta_of(&hash).unwrap().rating, 4);
+    }
+
+    /// Deleting a choice of tones takes each out of the library, all its
+    /// versions with it, in one pass, and sweeps what nothing else plays.
+    #[test]
+    fn several_tones_leave_the_library_in_one_pass() {
+        let _scratch = Scratch::new("forget-all");
+        let (played, _) = keep("Blackened", "vxpreset", b"march").unwrap();
+        let (older, _) = keep("Dream Pop", "vxpreset", b"one").unwrap();
+        let (newer, _) = keep("Dream Pop", "vxpreset", b"two").unwrap();
+        override_with(&older, &newer, "Dream Pop").unwrap();
+        let (kept, _) = keep("Plexi Crunch", "vxpreset", b"stays").unwrap();
+        save_setlist(&Setlist {
+            name: "Gig".into(),
+            slots: vec![Slot::new(&played, "Blackened")],
+            ..Default::default()
+        })
+        .unwrap();
+
+        // An older version names its whole tone; a hash the library does
+        // not hold is not counted.
+        let gone = forget_all(&[played.clone(), older.clone(), "0".repeat(64)]).unwrap();
+
+        assert_eq!(gone, 2);
+        let left: Vec<String> = entries().into_iter().map(|entry| entry.hash).collect();
+        assert_eq!(left, vec![kept]);
+        assert!(versions_of(&newer).is_empty(), "every version went");
+        assert!(holds(&played), "a setlist still plays it");
+        assert!(!holds(&older) && !holds(&newer), "nothing plays these");
     }
 
     /// The point of the object store: a setlist plays the bytes it was built

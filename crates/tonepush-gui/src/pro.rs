@@ -1876,6 +1876,25 @@ fn sanitise(name: &str) -> String {
     }
 }
 
+/// The worker's events, and the window woken for each. What a transfer
+/// reports as it goes is sent from inside its callback, where the worker
+/// itself is borrowed; an event that does not wake the window waits for
+/// something else to, which during a backup with nothing else moving left
+/// the window looking stalled.
+#[derive(Clone)]
+struct Waker {
+    events: Sender<Evt>,
+    ctx: egui::Context,
+}
+
+impl Waker {
+    fn send(&self, event: Evt) {
+        if self.events.send(event).is_ok() {
+            self.ctx.request_repaint();
+        }
+    }
+}
+
 struct Worker {
     commands: Receiver<Cmd>,
     events: Sender<Evt>,
@@ -2042,8 +2061,13 @@ impl Worker {
     }
 
     fn send(&self, event: Evt) {
-        if self.events.send(event).is_ok() {
-            self.ctx.request_repaint();
+        self.waker().send(event);
+    }
+
+    fn waker(&self) -> Waker {
+        Waker {
+            events: self.events.clone(),
+            ctx: self.ctx.clone(),
         }
     }
 
@@ -2300,11 +2324,11 @@ impl Worker {
                 let device_name = unique_slot_name(&list, index, &name);
                 let blob = import_blob(Library::Presets, &bytes, list.size)?;
                 let hash = preset_blob_hash(&blob)?;
-                let events = self.events.clone();
+                let events = self.waker();
                 self.device()?
                     .write_blob(&list, index, &device_name, &blob, |step| {
                         if let Some(line) = upload_line(step) {
-                            let _ = events.send(Evt::Progress(line));
+                            events.send(Evt::Progress(line));
                         }
                     })?;
                 self.refresh(false)?;
@@ -2336,7 +2360,7 @@ impl Worker {
                             let device_name = unique_slot_name(&list, index, &name);
                             let blob = import_blob(Library::Presets, &bytes, list.size)?;
                             let hash = preset_blob_hash(&blob)?;
-                            let events = self.events.clone();
+                            let events = self.waker();
                             self.device()?.write_blob(
                                 &list,
                                 index,
@@ -2344,7 +2368,7 @@ impl Worker {
                                 &blob,
                                 |step| {
                                     if let Some(line) = upload_line(step) {
-                                        let _ = events.send(Evt::Progress(format!(
+                                        events.send(Evt::Progress(format!(
                                             "Preset {}: {line}",
                                             index + 1
                                         )));
@@ -2466,7 +2490,7 @@ impl Worker {
                         + index
                 };
                 let rollback = self.rollback.take().expect("guard checked");
-                let events = self.events.clone();
+                let events = self.waker();
                 let mut settings_done = 0usize;
                 let slots_total = lists.iter().map(|list| list.count).sum::<usize>();
                 let restored = backup::restore_armed(&source, &rollback, self.device()?, |step| {
@@ -2497,7 +2521,7 @@ impl Worker {
                         }
                         backup::RestoreStep::Done => ("Restore verified".into(), 1.0),
                     };
-                    let _ = events.send(Evt::Working {
+                    events.send(Evt::Working {
                         what: line,
                         progress,
                     });
@@ -2625,7 +2649,7 @@ impl Worker {
             .map(|list| list.occupied().count() * list.chunks_per_slot())
             .sum::<usize>()
             .max(1);
-        let events = self.events.clone();
+        let events = self.waker();
         let target = path.to_owned();
         let mut completed_chunks = 0usize;
         backup::capture_reusing(self.device()?, path, captured, reuse.as_ref(), |step| {
@@ -2670,7 +2694,7 @@ impl Worker {
                 backup::Step::Done => (format!("Published {}", target.display()), 1.0),
                 _ => return,
             };
-            let _ = events.send(Evt::Working { what, progress });
+            events.send(Evt::Working { what, progress });
         })?;
         let bundle = backup::open_verified(path)?;
         let preset_hashes = preset_hashes_from_bundle(&bundle)?;
@@ -3039,11 +3063,11 @@ impl Worker {
         let device_name = unique_slot_name(&list, index, name);
         let blob = import_blob(library, &source, list.size)?;
         self.refuse_orphan(&list, index, Some(&device_name))?;
-        let events = self.events.clone();
+        let events = self.waker();
         self.device()?
             .write_blob(&list, index, &device_name, &blob, |step| {
                 if let Some(line) = upload_line(step) {
-                    let _ = events.send(Evt::Progress(line));
+                    events.send(Evt::Progress(line));
                 }
             })?;
         self.refresh(false)?;
@@ -4948,6 +4972,32 @@ root\\app\\ir\\on_off:{\"value\":\"OFF\"}\r\n";
         worker.take_back_history();
         assert_eq!(worker.history.len(), 1, "the preset's history is back");
         assert!(worker.audition.is_none());
+    }
+
+    /// A backup's progress is reported from inside the transfer, and each
+    /// report wakes the window: a six-minute backup on firmware 2.2 moves
+    /// on screen with nothing else asking for a frame.
+    #[test]
+    fn progress_from_inside_a_transfer_wakes_the_window() {
+        let (_commands, receiver) = mpsc::channel();
+        let (events, reports) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let worker = Worker::new(receiver, events, ctx.clone());
+        // A new context asks for a few frames of its own before it rests.
+        for _ in 0..5 {
+            let mut frame = ctx.run_ui(egui::RawInput::default(), |_| {});
+            frame.textures_delta.clear();
+        }
+        assert!(!ctx.has_requested_repaint(), "an idle window sleeps");
+
+        let progress = worker.waker();
+        progress.send(Evt::Working {
+            what: "Presets slot 12: 64/128".into(),
+            progress: 0.4,
+        });
+
+        assert!(matches!(reports.try_recv(), Ok(Evt::Working { .. })));
+        assert!(ctx.has_requested_repaint());
     }
 
     /// Stepping through tones queues an audition per row; only the one

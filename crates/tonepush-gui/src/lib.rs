@@ -5614,19 +5614,13 @@ impl App {
                 // Nothing here has to think about the setlists. Forgetting a
                 // tone takes it out of the library; the object survives exactly
                 // as long as something still points at it, which is the whole
-                // reason the store is addressed by content.
-                let mut gone = 0;
-                for hash in &chosen {
-                    match library::forget(hash) {
-                        Ok(()) => gone += 1,
-                        Err(why) => self.note(why),
-                    }
+                // reason the store is addressed by content. All of them in
+                // one pass: this runs on the thread that draws the window.
+                match library::forget_all(&chosen) {
+                    Ok(1) => self.note("removed 1 tone".to_owned()),
+                    Ok(gone) => self.note(format!("removed {gone} tones")),
+                    Err(why) => self.note(why),
                 }
-                self.note(if gone == 1 {
-                    "removed 1 tone".to_owned()
-                } else {
-                    format!("removed {gone} tones")
-                });
                 self.lib_chosen.clear();
                 self.lib_selected = None;
                 self.refresh_library();
