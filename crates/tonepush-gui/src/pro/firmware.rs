@@ -702,21 +702,26 @@ impl Worker {
         self.connect()
     }
 
-    /// A pedal found in Update Mode when TonePush looks for it: exactly one
-    /// candidate, which must say it is a StompStation PRO in Update Mode.
-    /// Only its identity is read.
-    pub(super) fn connect_update_mode(&mut self) -> WorkResult<()> {
-        let candidates = voidx_client::list_update_mode()?;
+    /// A port with the pedal's USB IDs but not its name: every port on
+    /// Windows, where the system driver reports none, and the pedal in Update
+    /// Mode. Exactly one candidate, which must say it is a StompStation PRO;
+    /// only its identity is read. In Update Mode the update flow takes it and
+    /// this returns `None`; otherwise the caller connects it as usual.
+    pub(super) fn connect_by_ids(&mut self) -> WorkResult<Option<Device<SerialLink>>> {
+        let candidates = voidx_client::list_by_ids()?;
         let [candidate] = candidates.as_slice() else {
             return Err(WorkError::Other("No StompStation PRO found".into()));
         };
         let device = Device::connect(candidate.open()?)?;
         let identity = device.identity().clone();
-        if identity.name != "StompStation PRO" || !firmware::is_update_mode(&identity) {
+        if identity.name != "StompStation PRO" {
             return Err(WorkError::Other(format!(
-                "{} is {} {}, not a StompStation PRO in Update Mode",
+                "{} is {} {}, not a StompStation PRO",
                 candidate.port_name, identity.name, identity.version
             )));
+        }
+        if !firmware::is_update_mode(&identity) {
+            return Ok(Some(device));
         }
         self.device = Some(device);
         self.update_mode = true;
@@ -724,7 +729,7 @@ impl Worker {
         self.rollback_path = None;
         self.forget_history();
         self.send(Evt::UpdateMode(identity));
-        Ok(())
+        Ok(None)
     }
 
     fn seen(&mut self, seen: Seen) {
@@ -740,7 +745,7 @@ impl Worker {
             return;
         };
         let normal = voidx_client::list().map_or(0, |found| found.len());
-        let update = voidx_client::list_update_mode().unwrap_or_default();
+        let update = voidx_client::list_by_ids().unwrap_or_default();
         match awaiting {
             Awaiting::UpdateMode => match update.as_slice() {
                 [candidate] => {
@@ -762,6 +767,10 @@ impl Worker {
                             self.update_mode = true;
                             self.awaiting = None;
                             self.firmware_event(FirmwareEvt::UpdateMode);
+                        } else if identity.name == "StompStation PRO" {
+                            // On Windows the pedal is found by its IDs in
+                            // normal mode too: it is not in Update Mode yet.
+                            self.seen(Seen::Normal);
                         } else {
                             // Nothing more goes to a device that is not the
                             // pedal.
@@ -784,7 +793,21 @@ impl Worker {
                 }
             }
             Awaiting::Restart { off: true } => {
-                if normal > 0 {
+                // On Windows the restarted pedal is only found by its IDs, so
+                // its identity says whether it started normally.
+                let restarted = normal > 0
+                    || match update.as_slice() {
+                        [candidate] => candidate
+                            .open()
+                            .map_err(WorkError::from)
+                            .and_then(|link| Ok(Device::connect(link)?))
+                            .is_ok_and(|device| {
+                                device.identity().name == "StompStation PRO"
+                                    && !firmware::is_update_mode(device.identity())
+                            }),
+                        _ => false,
+                    };
+                if restarted {
                     self.awaiting = None;
                     self.firmware_event(FirmwareEvt::On);
                     if let Err(error) = self.connect() {

@@ -33,13 +33,14 @@ pub fn list() -> crate::Result<Vec<Found>> {
     list_matching(is_stompstation_pro)
 }
 
-/// List ports that may be a StompStation PRO in update mode. Its built-in
-/// updater keeps the pedal's USB IDs (1d6b:0104) but names itself "Raspberry
-/// Pi" / "Pi USB Serial + Audio", which any Raspberry Pi gadget could do, so
-/// a caller must read the identity and require it to say StompStation PRO
-/// before sending anything else.
-pub fn list_update_mode() -> crate::Result<Vec<Found>> {
-    list_matching(may_be_update_mode)
+/// List ports that carry a StompStation PRO's USB IDs (1d6b:0104) without its
+/// name. On Windows the built-in serial driver reports every port as made by
+/// "Microsoft" with no product name, and in update mode the pedal names itself
+/// "Raspberry Pi" / "Pi USB Serial + Audio". Those IDs are the generic Linux
+/// gadget's, which other boards share, so a caller must read the identity and
+/// require it to say StompStation PRO before sending anything else.
+pub fn list_by_ids() -> crate::Result<Vec<Found>> {
+    list_matching(may_be_stompstation_pro)
 }
 
 fn list_matching(accept: fn(&Found) -> bool) -> crate::Result<Vec<Found>> {
@@ -87,17 +88,10 @@ fn list_matching(accept: fn(&Found) -> bool) -> crate::Result<Vec<Found>> {
     Ok(found)
 }
 
-fn may_be_update_mode(found: &Found) -> bool {
+fn may_be_stompstation_pro(found: &Found) -> bool {
     found.vendor_id == Some(0x1d6b)
         && found.product_id == Some(0x0104)
-        && found
-            .manufacturer
-            .as_deref()
-            .is_some_and(|value| value.trim() == "Raspberry Pi")
-        && found
-            .product
-            .as_deref()
-            .is_some_and(|value| value.trim() == "Pi USB Serial + Audio")
+        && !is_stompstation_pro(found)
 }
 
 fn is_stompstation_pro(found: &Found) -> bool {
@@ -198,5 +192,52 @@ impl Write for SerialLink {
 impl Link for SerialLink {
     fn description(&self) -> &str {
         &self.description
+    }
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    fn port(manufacturer: Option<&str>, product: Option<&str>, vid: u16, pid: u16) -> Found {
+        Found {
+            port_name: "COM3".into(),
+            manufacturer: manufacturer.map(str::to_owned),
+            product: product.map(str::to_owned),
+            serial_number: None,
+            vendor_id: Some(vid),
+            product_id: Some(pid),
+        }
+    }
+
+    #[test]
+    fn ports_with_the_pedals_ids_but_not_its_name_are_candidates() {
+        // Windows' own serial driver names every port "Microsoft".
+        assert!(may_be_stompstation_pro(&port(
+            Some("Microsoft"),
+            None,
+            0x1d6b,
+            0x0104
+        )));
+        // Update mode names the pedal a Raspberry Pi.
+        assert!(may_be_stompstation_pro(&port(
+            Some("Raspberry Pi"),
+            Some("Pi USB Serial + Audio"),
+            0x1d6b,
+            0x0104
+        )));
+        // A port that carries the name is found by `list` instead.
+        assert!(!may_be_stompstation_pro(&port(
+            Some("SONULAB"),
+            Some("StompStation PRO"),
+            0x1d6b,
+            0x0104
+        )));
+        assert!(!may_be_stompstation_pro(&port(
+            Some("Microsoft"),
+            None,
+            0x0e41,
+            0x4246
+        )));
     }
 }

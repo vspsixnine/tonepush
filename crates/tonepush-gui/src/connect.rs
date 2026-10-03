@@ -83,7 +83,7 @@ impl Listed {
                 })
                 .unwrap_or_default(),
             pro: ports(voidx_client::list()),
-            update: ports(voidx_client::list_update_mode()),
+            update: ports(voidx_client::list_by_ids()),
         }
     }
 }

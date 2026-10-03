@@ -2517,13 +2517,16 @@ impl Worker {
     }
 
     fn connect(&mut self) -> WorkResult<()> {
-        let Some(found) = voidx_client::list()?.into_iter().next() else {
-            // In Update Mode the pedal names itself a Raspberry Pi; it is
-            // used only when it says it is a StompStation PRO in Update Mode.
-            return self.connect_update_mode();
+        let mut device = match voidx_client::list()?.into_iter().next() {
+            Some(found) => Device::connect(found.open()?)?,
+            // On Windows, and in Update Mode, the port does not carry the
+            // pedal's name; it is used only when it says it is one.
+            None => match self.connect_by_ids()? {
+                Some(device) => device,
+                None => return Ok(()),
+            },
         };
         self.update_mode = false;
-        let mut device = Device::connect(found.open()?)?;
         // Firmware TonePush has not been verified against still opens, read
         // only: browsing, exports and backups work, which is also what a pedal
         // needs before and after a firmware update.
