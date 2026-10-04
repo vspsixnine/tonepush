@@ -11,8 +11,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Releases come only from commits already on main (AGENTS.md).
+  release-source:
+    name: tag is on main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the release commit on main
+        run: |
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "Release tags must point to a commit already on origin/main." >&2
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.target }})
+    needs: release-source
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -83,16 +107,45 @@ jobs:
             tar czf "$name.tar.gz" "$name"
           fi
 
+      # Inno Setup ships with the runner image. PowerShell, because bash on
+      # Windows rewrites /D... arguments as paths.
+      - name: Installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $arch = "${{ matrix.target }}".Split("-")[0]
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          $numericVersion = $version.Split("-")[0]
+          & $iscc "/DVersion=$version" "/DNumericVersion=$numericVersion" "/DArch=$arch" `
+            "/DBinaries=$PWD\target\${{ matrix.target }}\release" `
+            "/DOutputDir=$PWD\dist" packaging\windows\tonepush.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Attest release packages
+        uses: crmne/native-packages/.github/actions/attest@999768410cf53cdc68c8679c09cb14de1a6bca7b # v0.8.1
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*-setup.exe
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*-setup.exe
           if-no-files-found: error
 
   macos:
     name: macOS universal app
+    needs: release-source
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     runs-on: macos-latest
     env:
       # Complete Apple credentials enable native-packages signing/notarization.
@@ -156,6 +209,12 @@ jobs:
             --output "$RUNNER_TEMP/signed-portable/$name"
           tar czf "dist/$name.tar.gz" -C "$RUNNER_TEMP/signed-portable" "$name"
 
+      - name: Attest macOS packages
+        uses: crmne/native-packages/.github/actions/attest@999768410cf53cdc68c8679c09cb14de1a6bca7b # v0.8.1
+        with:
+          subject-path: |
+            dist/*.dmg
+            dist/*.tar.gz
       - uses: actions/upload-artifact@v7
         with:
           name: macos-universal

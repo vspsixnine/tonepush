@@ -512,6 +512,25 @@ mod tests {
         assert_ne!(name, CONFIG.slug);
     }
 
+    /// The Windows installer's marker, in the form fastframe-update reads, so
+    /// an installed copy updates by running the next installer. The setup
+    /// script must install it, the editor and the command line, and the
+    /// release workflow must build and publish the installer.
+    #[test]
+    fn the_windows_installer_carries_the_updaters_marker() {
+        let marker = include_str!("../../../packaging/windows/tonepush-installer.txt");
+        assert_eq!(marker.trim(), format!("{}-installer-v1", CONFIG.slug));
+        let script = include_str!("../../../packaging/windows/tonepush.iss");
+        assert!(script.starts_with('\u{feff}'), "Inno Setup needs a UTF-8 BOM");
+        for file in ["tonepush-installer.txt", "tonepush-gui.exe", "tonepush.exe"] {
+            assert!(script.contains(file), "tonepush.iss must install {file}");
+        }
+        assert!(script.contains("OutputBaseFilename=tonepush-v{#Version}-{#Arch}-pc-windows-msvc-setup"));
+        let release = include_str!("../../../.github/workflows/release.yml");
+        assert!(release.contains("packaging\\windows\\tonepush.iss"));
+        assert!(release.contains("dist/*-setup.exe"));
+    }
+
     /// The marker the release workflow puts next to the portable editor, in
     /// the exact form fastframe-update reads: `<slug>-portable.txt` holding
     /// `<slug>-portable-v1`.

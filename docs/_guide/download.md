@@ -31,14 +31,24 @@ brew install crmne/tap/tonepush          # the CLI
 
 ## Windows
 
-Almost every PC wants the first one; the second is for Windows on ARM
+Almost every PC wants the first installer; the second is for Windows on ARM
 (Surface and other Snapdragon machines):
+
+- [tonepush-v{{ v }}-x86_64-pc-windows-msvc-setup.exe]({{ base }}/tonepush-v{{ v }}-x86_64-pc-windows-msvc-setup.exe)
+- [tonepush-v{{ v }}-aarch64-pc-windows-msvc-setup.exe]({{ base }}/tonepush-v{{ v }}-aarch64-pc-windows-msvc-setup.exe)
+
+The installer needs no administrator rights. It puts TonePush in the Start
+menu, with a desktop shortcut if you ask for one, and installs the `tonepush`
+command-line tool beside it. Remove it from Settings, Apps.
+
+To run TonePush without installing, unpack an archive and run
+`tonepush-gui.exe`:
 
 - [tonepush-v{{ v }}-x86_64-pc-windows-msvc.zip]({{ base }}/tonepush-v{{ v }}-x86_64-pc-windows-msvc.zip)
 - [tonepush-v{{ v }}-aarch64-pc-windows-msvc.zip]({{ base }}/tonepush-v{{ v }}-aarch64-pc-windows-msvc.zip)
 
-Unpack and run `tonepush-gui.exe`. SmartScreen may warn about an unknown
-publisher on first run; choose More info, then Run anyway.
+SmartScreen may warn about an unknown publisher on first run; choose More
+info, then Run anyway.
 
 ## Linux
 
@@ -101,6 +111,9 @@ is sent. When there is one, the foot of the sidebar says so in amber (for
 example **0.8.0 is out**). Click it, or the settings button beside it, for the
 offer.
 
+- **The Windows installer:** click **Update to 0.8.0**. TonePush downloads
+  the next installer, checks it against its release signature, runs it and
+  opens the new version. The command-line tool updates with it.
 - **The macOS app from the DMG, and the Windows and Linux archives:** click
   **Update to 0.8.0**. TonePush downloads the new version, checks it against
   its release signature, and offers **Restart to update**. It closes, lets the
