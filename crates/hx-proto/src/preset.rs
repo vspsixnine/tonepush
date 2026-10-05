@@ -1429,9 +1429,12 @@ fn assignments_are_well_formed(tone: &Value) -> bool {
             Value::Array(entries) => entries,
             _ => return false,
         };
-        // HX Effects has six footswitches, so its list runs one longer than the
-        // ordinals `Source` knows: 10 is in use there, apparently for Snapshots.
-        if !entries.is_empty() && !(1..=10).contains(&ordinal) {
+        // The list runs as long as the device has controllers, which is longer
+        // than the ordinals `Source` knows: HX Effects (six footswitches) uses
+        // 10, and an HX Stomp XL (eight) stores presets that use 12. Readers
+        // skip an ordinal they cannot name, so only the empty "nothing"
+        // ordinal 0 is held to having no entries.
+        if !entries.is_empty() && ordinal == 0 {
             return false;
         }
         entries.iter().all(|entry| {
@@ -2988,7 +2991,8 @@ mod tests {
         by_source[8] = Value::Array(vec![entry(midi)]);
         assert!(Preset::parse(&document(Value::Array(by_source))).is_none());
 
-        // HX Effects uses ordinal 10; nothing uses 11.
+        // HX Effects uses ordinal 10 and an HX Stomp XL 12; only the
+        // "nothing" ordinal 0 must stay empty.
         let snapshot_driven = crate::msgmap! {
             key::ASSIGNED_KIND => Value::Int(4),
             key::ASSIGNED_MIN => Value::Int(0),
@@ -3001,8 +3005,11 @@ mod tests {
         let mut by_source = (0..11).map(|_| Value::Nil).collect::<Vec<_>>();
         by_source[10] = Value::Array(vec![entry(snapshot_driven.clone())]);
         assert!(Preset::parse(&document(Value::Array(by_source))).is_some());
-        let mut by_source = (0..12).map(|_| Value::Nil).collect::<Vec<_>>();
-        by_source[11] = Value::Array(vec![entry(snapshot_driven)]);
+        let mut by_source = (0..13).map(|_| Value::Nil).collect::<Vec<_>>();
+        by_source[12] = Value::Array(vec![entry(snapshot_driven.clone())]);
+        assert!(Preset::parse(&document(Value::Array(by_source))).is_some());
+        let mut by_source = (0..13).map(|_| Value::Nil).collect::<Vec<_>>();
+        by_source[0] = Value::Array(vec![entry(snapshot_driven)]);
         assert!(Preset::parse(&document(Value::Array(by_source))).is_none());
     }
 

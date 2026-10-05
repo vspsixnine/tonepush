@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use hx_proto::frame::{ChannelHeader, MSG_DATA};
+use hx_proto::frame::{ChannelHeader, MSG_DATA, MSG_KEEPALIVE};
 use hx_proto::msgpack::{Encoder, Value};
 use hx_proto::rpc::{key, op, Message, StreamReader};
 use hx_proto::{ChannelId, Frame};
@@ -50,6 +50,8 @@ pub struct Pedal {
     pub frames_in: usize,
     /// Every transfer received, data or not.
     pub transfers_in: usize,
+    /// The channel of every keepalive received, in order.
+    pub keepalives_in: Vec<u16>,
     inbox: BTreeMap<u16, StreamReader>,
     seq: BTreeMap<u16, u16>,
 }
@@ -70,6 +72,7 @@ impl Pedal {
             fail_next_send: None,
             frames_in: 0,
             transfers_in: 0,
+            keepalives_in: Vec::new(),
             inbox: BTreeMap::new(),
             seq: BTreeMap::new(),
         }))
@@ -106,6 +109,9 @@ impl Pedal {
         let Some((header, rest)) = ChannelHeader::decode(&frame.payload) else {
             return;
         };
+        if header.msg_type == MSG_KEEPALIVE {
+            self.keepalives_in.push(frame.dst);
+        }
         if !header.has_data() || rest.is_empty() {
             return;
         }

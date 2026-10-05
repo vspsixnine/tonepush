@@ -170,6 +170,10 @@ struct Channel {
     acked: u32,
     reader: StreamReader,
     txn: i64,
+    /// When a frame last went out on this channel. The device stops answering
+    /// a channel that has been silent for somewhere between three and five
+    /// seconds, so a long run of work on one channel has to feed the others.
+    last_sent: Instant,
 }
 
 impl Channel {
@@ -185,6 +189,7 @@ impl Channel {
             acked: 0,
             reader: StreamReader::new(),
             txn: rpc::FIRST_TXN,
+            last_sent: Instant::now(),
         }
     }
 
@@ -217,6 +222,11 @@ pub struct Session {
     /// do on this session, and continuing to write only digs deeper - so the
     /// session refuses further work and says why.
     poisoned: Option<String>,
+    /// Whether to feed channels that have gone quiet (see
+    /// `keep_quiet_channels`). Off for a replay: a transcript cannot drop a
+    /// channel, and frames sent on a timer would make its output depend on
+    /// how fast the replay runs.
+    keep_quiet: bool,
     pub profile: DeviceProfile,
 }
 
@@ -408,11 +418,21 @@ impl Session {
         wire: Box<dyn Wire>,
         profile: DeviceProfile,
     ) -> Result<Session> {
+        Session::bring_up_with(interface, wire, profile, true)
+    }
+
+    fn bring_up_with(
+        interface: Option<nusb::Interface>,
+        wire: Box<dyn Wire>,
+        profile: DeviceProfile,
+        keep_quiet: bool,
+    ) -> Result<Session> {
         let mut s = Session {
             interface,
             wire,
             channels: BTreeMap::new(),
             poisoned: None,
+            keep_quiet,
             profile,
         };
         s.handshake()?;
@@ -428,7 +448,7 @@ impl Session {
     /// hardware. Runs the same handshake and liveness read a live open does,
     /// against the recorded responses, so replaying reproduces a real session.
     pub fn replaying(wire: Box<dyn Wire>, profile: DeviceProfile) -> Result<Session> {
-        Session::bring_up(None, wire, profile)
+        Session::bring_up_with(None, wire, profile, false)
     }
 
     /// Payload of the channel handshake, taken verbatim from HX Edit. The
@@ -579,6 +599,13 @@ impl Session {
             return Err(Error::Protocol(why.clone()));
         }
         let sent = self.wire.send(&bytes);
+        if sent.is_ok() {
+            // Channels are keyed by the device's end, which is the frame's
+            // destination.
+            if let Some(channel) = self.channels.get_mut(&f.dst) {
+                channel.last_sent = Instant::now();
+            }
+        }
         // A write that timed out may or may not have reached the device, so
         // neither its sequence numbers nor its idea of what we have sent can
         // be trusted any more. Nothing further goes out on this session.
@@ -693,6 +720,19 @@ impl Session {
         stream.extend_from_slice(&encoded);
 
         let chunks: Vec<_> = stream.chunks(Self::CHUNK).collect();
+        // Feed the other channels before anything goes out. Most replies
+        // arrive on the first read after this, which returns before the reply
+        // loop's own upkeep, so this is where a run of short requests keeps
+        // them alive. Nothing else goes out while a multi-chunk message does -
+        // frames on another channel in the middle of one are untested on
+        // hardware - so before one of those every other channel is fed,
+        // however recently it spoke, and their silence is bounded by the send
+        // alone. An 8 KB impulse response can take a few seconds.
+        if chunks.len() > 1 {
+            self.feed_channels_quiet_for(id, Duration::ZERO)?;
+        } else {
+            self.keep_quiet_channels(id)?;
+        }
         // Once the first chunk is out, any failure leaves a partial message
         // on the wire, and no later request can recover from that - whether
         // it was a later write that failed or a read between two of them.
@@ -962,8 +1002,10 @@ impl Session {
                 self.ack_channel(id)?;
             }
             // And the channels nobody is waiting on need it too - see
-            // `ack_idle_channels`.
+            // `ack_idle_channels` - as well as a frame now and then, or the
+            // device stops answering them - see `keep_quiet_channels`.
             self.ack_idle_channels(id)?;
+            self.keep_quiet_channels(id)?;
         }
         Err(Error::Timeout(txn))
     }
@@ -1066,20 +1108,63 @@ impl Session {
     /// Keep every channel alive; the device drops idle sessions.
     pub fn keepalive(&mut self) -> Result<()> {
         for id in ChannelId::ALL {
-            if !self.channels.contains_key(&id.device) {
+            if self.channels.contains_key(&id.device) {
+                self.keepalive_one(id)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// How long a channel may go without a frame before one is sent to keep
+    /// it: comfortably inside the three to five seconds after which the
+    /// device stops answering it.
+    const QUIET: Duration = Duration::from_millis(1500);
+
+    /// Keep alive the channels, other than the one in use, that have been
+    /// quiet for [`QUIET`](Self::QUIET).
+    ///
+    /// A long run of requests on one channel - a backup reads every preset
+    /// and sweeps 256 settings on the data channel - otherwise leaves the
+    /// control channel silent long enough that the device stops answering
+    /// it, and the next request there (the backup's impulse-response list)
+    /// times out and costs the session.
+    fn keep_quiet_channels(&mut self, busy: ChannelId) -> Result<()> {
+        self.feed_channels_quiet_for(busy, Self::QUIET)
+    }
+
+    /// Keep alive the channels other than `busy` that have sent nothing for
+    /// `quiet_for`. Never the busy one: a frame there mid-transaction burns a
+    /// sequence number the device is not expecting.
+    fn feed_channels_quiet_for(&mut self, busy: ChannelId, quiet_for: Duration) -> Result<()> {
+        if !self.keep_quiet {
+            return Ok(());
+        }
+        for id in ChannelId::ALL {
+            if id.device == busy.device {
                 continue;
             }
-            let (seq, ack) = self.tick(id)?;
-            let mut payload = Vec::new();
-            ChannelHeader {
-                seq,
-                msg_type: MSG_KEEPALIVE,
-                ack,
+            let quiet = self
+                .channels
+                .get(&id.device)
+                .is_some_and(|c| c.last_sent.elapsed() >= quiet_for);
+            if quiet {
+                self.keepalive_one(id)?;
             }
-            .encode_into(&mut payload);
-            self.write(&Frame::new(id.device, id.host, payload))?;
-            self.mark_acknowledged(id);
         }
+        Ok(())
+    }
+
+    fn keepalive_one(&mut self, id: ChannelId) -> Result<()> {
+        let (seq, ack) = self.tick(id)?;
+        let mut payload = Vec::new();
+        ChannelHeader {
+            seq,
+            msg_type: MSG_KEEPALIVE,
+            ack,
+        }
+        .encode_into(&mut payload);
+        self.write(&Frame::new(id.device, id.host, payload))?;
+        self.mark_acknowledged(id);
         Ok(())
     }
 
@@ -1508,6 +1593,100 @@ mod tests {
         assert_eq!(chunks.len(), 16);
         assert!(chunks.iter().all(|c| c.len() <= Session::CHUNK));
         assert_eq!(chunks.iter().map(|c| c.len()).sum::<usize>(), body.len());
+    }
+
+    /// A session that feeds quiet channels, as a live one does. The fake
+    /// pedal is reached through `replaying`, which turns that off.
+    fn feeding_session(pedal: &std::sync::Arc<std::sync::Mutex<fake::Pedal>>) -> Session {
+        let mut session = fake::session(pedal);
+        session.keep_quiet = true;
+        pedal.lock().unwrap().keepalives_in.clear();
+        session
+    }
+
+    /// Make every channel look as though it last sent `ago` before now.
+    fn age_channels(session: &mut Session, ago: Duration) {
+        let then = Instant::now() - ago;
+        for channel in session.channels.values_mut() {
+            channel.last_sent = then;
+        }
+    }
+
+    /// The device stops answering a channel that has been silent for a few
+    /// seconds, so a request on one channel feeds the others once they have
+    /// been quiet that long - and never the one in use, where a frame
+    /// mid-transaction burns a sequence number the device does not expect.
+    #[test]
+    fn a_request_feeds_the_channels_that_have_gone_quiet() {
+        let pedal = fake::Pedal::new();
+        let mut session = feeding_session(&pedal);
+        age_channels(&mut session, Session::QUIET);
+
+        session.preset_info().unwrap();
+
+        let fed = pedal.lock().unwrap().keepalives_in.clone();
+        let others: Vec<u16> = ChannelId::ALL
+            .iter()
+            .map(|id| id.device)
+            .filter(|device| *device != ChannelId::DATA.device)
+            .filter(|device| session.channels.contains_key(device))
+            .collect();
+        assert!(!others.is_empty(), "the session has other channels open");
+        for device in &others {
+            assert!(fed.contains(device), "{device:#06x} was fed");
+        }
+        assert!(
+            !fed.contains(&ChannelId::DATA.device),
+            "the busy channel is never fed"
+        );
+    }
+
+    /// Every frame written counts as the channel speaking: a channel that was
+    /// quiet and has just sent something is not fed again.
+    #[test]
+    fn a_channel_that_spoke_recently_is_left_alone() {
+        let pedal = fake::Pedal::new();
+        let mut session = feeding_session(&pedal);
+        age_channels(&mut session, Session::QUIET);
+        session.keepalive().unwrap();
+        pedal.lock().unwrap().keepalives_in.clear();
+
+        session.preset_info().unwrap();
+
+        assert!(pedal.lock().unwrap().keepalives_in.is_empty());
+    }
+
+    /// Nothing else goes out while a message of several chunks does, so every
+    /// other channel is fed first, however recently it spoke.
+    #[test]
+    fn a_multi_chunk_send_feeds_every_other_channel_first() {
+        let pedal = fake::Pedal::new();
+        let mut session = feeding_session(&pedal);
+        let preset = session.read_preset().unwrap();
+        assert!(preset.encode().len() > Session::CHUNK, "a multi-chunk send");
+        pedal.lock().unwrap().keepalives_in.clear();
+
+        session.write_preset(&preset).unwrap();
+
+        let fed = pedal.lock().unwrap().keepalives_in.clone();
+        assert!(!fed.is_empty(), "the other channels were fed");
+        assert!(
+            !fed.contains(&ChannelId::DATA.device),
+            "the busy channel is never fed"
+        );
+    }
+
+    /// A replay sends only what was recorded: no frames on a timer.
+    #[test]
+    fn a_replay_does_not_feed_quiet_channels() {
+        let pedal = fake::Pedal::new();
+        let mut session = fake::session(&pedal);
+        pedal.lock().unwrap().keepalives_in.clear();
+        age_channels(&mut session, Session::QUIET);
+
+        session.preset_info().unwrap();
+
+        assert!(pedal.lock().unwrap().keepalives_in.is_empty());
     }
 
     /// A read between two chunks of a long message that fails outright, not
