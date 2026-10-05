@@ -225,7 +225,8 @@ pub struct Session {
     /// Whether to feed channels that have gone quiet (see
     /// `keep_quiet_channels`). Off for a replay: a transcript cannot drop a
     /// channel, and frames sent on a timer would make its output depend on
-    /// how fast the replay runs.
+    /// how fast the replay runs. Also held off while the channels open; see
+    /// `handshake`.
     keep_quiet: bool,
     pub profile: DeviceProfile,
 }
@@ -458,7 +459,20 @@ impl Session {
     /// Occupies the acknowledgement slot in a handshake; meaning unknown.
     const HELLO_FIELD: u32 = 0x2100_0100;
 
+    /// Open every channel, sending what HX Edit sends and nothing else.
+    ///
+    /// Quiet channels are not fed here. The opening is reproduced from HX
+    /// Edit frame for frame, and a device slow to answer the later channels'
+    /// openings would otherwise get a keepalive on an earlier one partway
+    /// through - a frame the opening has never carried on hardware.
     fn handshake(&mut self) -> Result<()> {
+        let keep_quiet = std::mem::replace(&mut self.keep_quiet, false);
+        let opened = self.open_channels();
+        self.keep_quiet = keep_quiet;
+        opened
+    }
+
+    fn open_channels(&mut self) -> Result<()> {
         // Anything the device queued before we attached would desynchronise the
         // streams, so start from a known-empty endpoint.
         self.drain();
@@ -720,7 +734,8 @@ impl Session {
         stream.extend_from_slice(&encoded);
 
         let chunks: Vec<_> = stream.chunks(Self::CHUNK).collect();
-        // Feed the other channels before anything goes out. Most replies
+        // Feed the other channels before anything goes out (except while the
+        // channels open; see `handshake`). Most replies
         // arrive on the first read after this, which returns before the reply
         // loop's own upkeep, so this is where a run of short requests keeps
         // them alive. Nothing else goes out while a multi-chunk message does -
@@ -923,7 +938,8 @@ impl Session {
     }
 
     /// [`request_raw`](Self::request_raw), running `ready` once the device's
-    /// backlog has been read and just before the request goes out.
+    /// backlog has been read, before the request - and any keepalives that
+    /// [`send_stream`](Self::send_stream) sends ahead of it - goes out.
     fn request_raw_after(
         &mut self,
         id: ChannelId,
@@ -1673,6 +1689,73 @@ mod tests {
         assert!(
             !fed.contains(&ChannelId::DATA.device),
             "the busy channel is never fed"
+        );
+    }
+
+    /// When the host sent a frame, to which channel, and whether it carried
+    /// stream data.
+    type Sent = std::sync::Arc<std::sync::Mutex<Vec<(Instant, u16, bool)>>>;
+
+    /// The fake pedal, answering every read only after a pause, with a note
+    /// of every frame sent.
+    struct SlowCable(fake::Cable, Sent);
+
+    impl Wire for SlowCable {
+        fn send(&mut self, bytes: &[u8]) -> Result<()> {
+            if let Ok(frame) = Frame::decode(bytes) {
+                let data = ChannelHeader::decode(&frame.payload)
+                    .is_some_and(|(header, rest)| header.has_data() && !rest.is_empty());
+                self.1
+                    .lock()
+                    .unwrap()
+                    .push((Instant::now(), frame.dst, data));
+            }
+            self.0.send(bytes)
+        }
+        fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>> {
+            std::thread::sleep(timeout.min(Duration::from_millis(700)));
+            self.0.recv(timeout)
+        }
+    }
+
+    /// A device slow to answer the opening leaves the first channels quiet
+    /// past `QUIET` before the last one opens, and the opening still sends
+    /// nothing HX Edit does not.
+    #[test]
+    fn the_opening_feeds_no_channel_however_slow_the_device() {
+        let pedal = fake::Pedal::new();
+        let sent = Sent::default();
+        let mut session = Session {
+            interface: None,
+            wire: Box::new(SlowCable(fake::Cable(pedal.clone()), sent.clone())),
+            channels: BTreeMap::new(),
+            poisoned: None,
+            keep_quiet: true,
+            profile: hx_proto::HX_STOMP,
+        };
+        session.handshake().unwrap();
+
+        assert!(pedal.lock().unwrap().keepalives_in.is_empty());
+        // The last chance to feed a channel is just before the data channel's
+        // service-open goes out. The control channel had been quiet past
+        // `QUIET` by then, so it would have been fed with feeding on:
+        // otherwise this test proves nothing.
+        let sent = sent.lock().unwrap();
+        let (opened, ..) = *sent
+            .iter()
+            .rfind(|(_, dst, data)| *dst == ChannelId::DATA.device && *data)
+            .expect("the data channel's service-open");
+        let (spoke, ..) = *sent
+            .iter()
+            .rfind(|(at, dst, _)| *dst == ChannelId::CONTROL.device && *at < opened)
+            .expect("the control channel opened first");
+        assert!(
+            opened - spoke >= Session::QUIET,
+            "the opening was slow enough to matter"
+        );
+        assert!(
+            session.keep_quiet,
+            "feeding resumes once the channels are open"
         );
     }
 
